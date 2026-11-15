@@ -1,5 +1,5 @@
 {
-  "about": "Maintained by the project, changed only through reviewed pull requests (docs/ceviri.md). A language is 'reviewed' once a native speaker has checked every string; 'draft' lists keys added or machine-drafted since; 'noWords' lists, separated by |, the answers that mean no in the language, which its command-line yes answers (cliYes) may not include. Keys in 'critical' are shown in English until reviewed.",
+  "about": "Maintained by the project, changed only through reviewed pull requests (docs/translation.md). A language is 'reviewed' once a native speaker has checked every string; 'draft' lists keys added or machine-drafted since; 'noWords' lists, separated by |, the answers that mean no in the language, which its command-line yes answers (cliYes) may not include. Keys in 'critical' are shown in English until reviewed.",
   "drafts": "Draft translations were produced with Claude (Anthropic) and are licensed like the rest of the project.",
   "critical": [
     "verificationTitle",

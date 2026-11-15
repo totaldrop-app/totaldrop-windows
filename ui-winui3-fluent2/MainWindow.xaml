@@ -30,7 +30,7 @@
                 Orientation="Horizontal"
                 Spacing="12"
                 VerticalAlignment="Center">
-                <!-- TotalDrop Kose Mark: explicitly LeftToRight so RTL layouts never mirror the upper-right corner (docs/tasarim.md) -->
+                <!-- TotalDrop Kose Mark: explicitly LeftToRight so RTL layouts never mirror the upper-right corner (docs/design.md) -->
                 <Viewbox
                     Width="20"
                     Height="20"

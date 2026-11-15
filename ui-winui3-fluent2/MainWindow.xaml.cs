@@ -26,7 +26,7 @@ namespace TotalDrop.WinUI;
 /// Configures <see cref="MicaBackdrop"/> with <see cref="DesktopAcrylicBackdrop"/>
 /// fallback, custom <c>TitleBar</c>, live Windows System Accent Color and High
 /// Contrast adaptation, and reduced-motion gating (<c>UISettings.AnimationsEnabled</c>)
-/// per ADR 0016 and <c>docs/tasarim.md</c>.
+/// per ADR 0016 and <c>docs/design.md</c>.
 /// </summary>
 public sealed partial class MainWindow : Window, INotifyPropertyChanged
 {

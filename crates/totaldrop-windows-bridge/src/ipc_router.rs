@@ -339,7 +339,7 @@ pub enum WinUiBridgeMessage {
     /// (`ADR 0019`).
     TransferFailed(LocalizedTransferError),
     /// TotalDrop `Kose` brand mark motion and theme color snapshot gated by
-    /// `UISettings.AnimationsEnabled` (`ADR 0016`, `docs/tasarim.md`).
+    /// `UISettings.AnimationsEnabled` (`ADR 0016`, `docs/design.md`).
     MarkAnimationState {
         /// Whether the 3.2-second 4-quarter rotation animation should run.
         animate: bool,

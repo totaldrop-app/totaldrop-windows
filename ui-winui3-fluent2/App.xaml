@@ -11,7 +11,7 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
-            <!-- Brand Mark (Kose) invariant colors per docs/tasarim.md; High Contrast uses SystemColorWindowTextColor -->
+            <!-- Brand Mark (Kose) invariant colors per docs/design.md; High Contrast uses SystemColorWindowTextColor -->
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Light">
                     <SolidColorBrush x:Key="TotalDropMarkBrush" Color="#6D4AE0" />

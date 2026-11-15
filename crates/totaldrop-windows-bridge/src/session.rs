@@ -4,7 +4,7 @@
 //! Bridge over [`totaldrop_core`] options, async send/receive session
 //! preparation, cancellation tokens, progress projections, error mapping, and
 //! TotalDrop's platform-invariant brand mark motion (`Kose`, ADR 0016 &
-//! `docs/tasarim.md`).
+//! `docs/design.md`).
 
 use std::path::{Path, PathBuf};
 
@@ -19,7 +19,7 @@ use crate::l10n::{RegionalPercent, WindowsLocalizer};
 use crate::uri::{UriValidationError, ValidatedCode};
 
 /// TotalDrop brand mark (`Kose`) SVG path on its 112x112 unit canvas
-/// (`docs/tasarim.md`). Never mirrored in right-to-left layouts.
+/// (`docs/design.md`). Never mirrored in right-to-left layouts.
 pub const MARK_SVG_PATH: &str = "M55 15H97V57A42 42 0 1 1 55 15Z";
 
 /// TotalDrop brand mark color on light backgrounds (`#6D4AE0`).
@@ -29,7 +29,7 @@ pub const MARK_HEX_LIGHT: &str = "#6D4AE0";
 pub const MARK_HEX_DARK: &str = "#A68BFF";
 
 /// Full 4-quarter rotation cycle duration of the `Kose` mark during an active
-/// transfer (`3200 ms`, `docs/tasarim.md`).
+/// transfer (`3200 ms`, `docs/design.md`).
 pub const MARK_CYCLE_MS: u32 = 3200;
 
 /// Duration of each 90-degree quarter step (`600 ms` turn + `200 ms` dwell =

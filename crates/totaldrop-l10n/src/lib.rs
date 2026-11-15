@@ -5,7 +5,7 @@
 //! command line): the strings in `l10n/`, the language the system asks
 //! for, and numbers, sizes and plurals in that language and region.
 //!
-//! The rules are in ADR 0008 (`docs/kararlar/0008-diller-ve-bolgeler.md`).
+//! The rules are in ADR 0008 (`docs/decisions/0008-languages-and-regions.md`).
 //! The ARB files are compiled in, so a program never reads translations
 //! from disk.
 

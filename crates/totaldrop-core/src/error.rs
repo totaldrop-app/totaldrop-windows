@@ -177,7 +177,7 @@ fn protocol_cause(m: &str) -> Cause {
         "stream closed",
     ];
     // Local failures and limits, and a message that failed authentication,
-    // which may be an attack (docs/tehdit-modeli.md): an update would not
+    // which may be an attack (docs/threat-model.md): an update would not
     // help, so nothing is suggested.
     const OWN: [&str; 9] = [
         "message failed authentication",
