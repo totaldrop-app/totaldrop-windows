@@ -3,8 +3,9 @@
 
 # Hardened continuous integration workflow for TotalDrop for Windows 11 (ADR 0016).
 # Enforces least-privilege permissions, 40-character SHA-pinned actions, digest-pinned
-# container images, native x64 + ARM64 matrix verification, MSVC cross-target release
-# builds, PowerShell AST and XAML/MSIX manifest checks, cargo-deny, REUSE 3.3, and gitleaks.
+# container images, native x64 + ARM64 matrix verification, MSVC release builds,
+# real x64 .NET 10 Native AOT WinUI 3 + MakePri + strict makeappx MSIX build & deep
+# verification, static asset/version/resw checks, cargo-deny, REUSE 3.3, and gitleaks.
 name: CI
 
 on:
@@ -48,7 +49,15 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         shell: bash
-        run: rustup show active-toolchain || rustup toolchain install
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          if [ "$MATRIX_OS" = "windows-11-arm" ]; then
+            rustup target add aarch64-pc-windows-msvc
+          elif [ "$MATRIX_OS" = "windows-latest" ]; then
+            rustup target add x86_64-pc-windows-msvc
+          fi
       - name: Format
         if: runner.os == 'Linux'
         shell: bash
@@ -61,6 +70,37 @@ jobs:
         env:
           TOTALDROP_REQUIRE_IPV6: "1"
         run: cargo test --workspace --locked
+      - name: Build native ARM64 totaldrop-windows-ffi cdylib release
+        if: matrix.os == 'windows-11-arm'
+        shell: bash
+        run: >-
+          env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS
+          cargo build
+          --config target-arm64/cargo-config.toml
+          --target aarch64-pc-windows-msvc
+          -p totaldrop-windows-ffi
+          --release
+          --locked
+
+  static-checks:
+    name: Static assets, versions & l10n parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Ensure Pillow is installed for Kose asset verification
+        run: >-
+          python3 -c "import PIL" 2>/dev/null ||
+          (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends python3-pil)
+      - name: Verify version alignment & canonical CLSID
+        run: python3 tools/check-versions.py
+      - name: Verify 46 deterministic Kose MSIX assets & TotalDrop.ico
+        run: python3 tools/render-windows-assets.py --check
+      - name: Verify 35-locale .resw and AppxManifest parity
+        run: python3 tools/check-resw-parity.py --check
+      - name: Verify 6 isolated sub-platform x CPU units
+        run: python3 tools/verify-subplatforms.py
 
   windows-msvc-targets:
     name: Windows MSVC targets & manifests
@@ -69,29 +109,44 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Setup Python 3.12 (x64)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: x64
       - name: Install the pinned Rust toolchain and MSVC targets
         shell: bash
         run: |
           rustup show active-toolchain || rustup toolchain install
           rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
-      - name: Build totaldrop-windows-bridge release (x86_64-pc-windows-msvc)
+      - name: Build totaldrop-windows-bridge & FFI cdylib release (x86_64-pc-windows-msvc)
         shell: bash
         run: >-
+          env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS
           cargo build
           --config target-x86_64/cargo-config.toml
           --target x86_64-pc-windows-msvc
           -p totaldrop-windows-bridge
+          -p totaldrop-windows-ffi
           --release
           --locked
-      - name: Build totaldrop-windows-bridge release (aarch64-pc-windows-msvc)
+      - name: Build totaldrop-windows-bridge & check FFI (aarch64-pc-windows-msvc)
         shell: bash
-        run: >-
-          cargo build
-          --config target-arm64/cargo-config.toml
-          --target aarch64-pc-windows-msvc
-          -p totaldrop-windows-bridge
-          --release
-          --locked
+        run: |
+          env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
+            cargo build \
+            --config target-arm64/cargo-config.toml \
+            --target aarch64-pc-windows-msvc \
+            -p totaldrop-windows-bridge \
+            --release \
+            --locked
+          env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
+            cargo check \
+            --config target-arm64/cargo-config.toml \
+            --target aarch64-pc-windows-msvc \
+            -p totaldrop-windows-ffi \
+            --release \
+            --locked
       - name: Validate PowerShell AST syntax
         shell: pwsh
         run: |
@@ -114,14 +169,14 @@ jobs:
             }
             Write-Host "PowerShell AST OK: $script ($($tokens.Count) tokens)"
           }
-      - name: Validate XML well-formedness (.xaml, .appxmanifest, and 35-locale .resw)
+      - name: Validate XML well-formedness (.xaml, .appxmanifest, app.manifest, and 35-locale .resw)
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = "Stop"
-          $xmlFiles = @(git ls-files '*.xaml' '*.appxmanifest' '*.resw')
-          if ($LASTEXITCODE -ne 0 -or $xmlFiles.Count -lt 37) {
-            throw "Expected tracked .xaml, .appxmanifest, and 35 .resw files (found $($xmlFiles.Count))"
+          $xmlFiles = @(git ls-files '*.xaml' '*.appxmanifest' '*.resw' 'ui-winui3-fluent2/app.manifest')
+          if ($LASTEXITCODE -ne 0 -or $xmlFiles.Count -lt 38) {
+            throw "Expected tracked .xaml, .appxmanifest, app.manifest, and 35 .resw files (found $($xmlFiles.Count))"
           }
           foreach ($relPath in $xmlFiles) {
             $fullPath = (Resolve-Path -LiteralPath $relPath).Path
@@ -130,9 +185,97 @@ jobs:
             $doc.Load($fullPath)
           }
           Write-Host "XML OK: $($xmlFiles.Count) files validated (including 35 WinUI 3 .resw locales)"
-      - name: Verify 6 isolated sub-platform x CPU units
+      - name: Verify sub-platforms, versions & .resw parity on Windows
         shell: bash
-        run: python3 tools/verify-subplatforms.py
+        run: |
+          python tools/verify-subplatforms.py
+          python tools/check-versions.py
+          python tools/check-resw-parity.py --check
+
+  windows-x64-msix:
+    name: Windows x64 Native AOT & MSIX
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python 3.12 (x64)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-pc-windows-msvc
+      - name: Setup .NET 10 LTS SDK
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "10.0.x"
+      - name: Confirm active .NET 10 LTS SDK
+        shell: pwsh
+        run: |
+          Push-Location ui-winui3-fluent2
+          try {
+            $ver = dotnet --version
+            Write-Host "Active dotnet SDK: $ver"
+            if ($ver -notlike "10.0.*") {
+              throw "Expected .NET 10.0.x LTS SDK, got '$ver'"
+            }
+          }
+          finally {
+            Pop-Location
+          }
+      - name: Build x64 FFI cdylib, Native AOT WinUI 3, resources.pri & self-signed test MSIX
+        shell: pwsh
+        run: pwsh -NoProfile -File .\target-x86_64\build-x64.ps1 -SelfSignEphemeral
+      - name: Verify subplatform MSIX OPC/ZIP & SHA256SUMS
+        shell: bash
+        run: sh subplatforms/msix/x86_64/verify.sh dist
+      - name: Deep-verify MSIX contents, PRI dump, PE32+ hardening, CRT isolation & live C ABI
+        shell: bash
+        run: >-
+          python tools/verify-msix-artifact.py
+          --msix dist/TotalDrop_0.1.1.0_x64.msix
+          --arch x64
+          --expected-version 0.1.1.0
+          --expect-signed
+          --pri-dump dist/work-x64/pri-work-x64/resources-x64.pri.xml
+      - name: Verify ephemeral Authenticode signature on test MSIX
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $msix = (Resolve-Path -LiteralPath "dist\TotalDrop_0.1.1.0_x64.msix").Path
+          $sig = Get-AuthenticodeSignature -FilePath $msix
+          Write-Host "Authenticode Status: $($sig.Status)"
+          Write-Host "Authenticode StatusMessage: $($sig.StatusMessage)"
+          if ($null -eq $sig.SignerCertificate) {
+            throw "MSIX is not signed (SignerCertificate is null)."
+          }
+          Write-Host "Authenticode Subject: $($sig.SignerCertificate.Subject)"
+          Write-Host "Authenticode Algorithm: $($sig.SignerCertificate.SignatureAlgorithm.FriendlyName)"
+          if ($sig.SignerCertificate.Subject -ne "CN=TotalDrop") {
+            throw "Expected Subject 'CN=TotalDrop', got '$($sig.SignerCertificate.Subject)'."
+          }
+          if ($sig.SignerCertificate.SignatureAlgorithm.FriendlyName -notmatch "sha256") {
+            throw "Expected SHA-256 signature algorithm, got '$($sig.SignerCertificate.SignatureAlgorithm.FriendlyName)'."
+          }
+          if ($sig.Status -in @("NotSigned", "HashMismatch", "NotSupportedFileFormat")) {
+            throw "Invalid Authenticode signature status: $($sig.Status) ($($sig.StatusMessage))"
+          }
+          if ($sig.Status -ne "Valid" -and -not ($sig.Status -eq "UnknownError" -and $sig.StatusMessage -match "not trusted|root certificate|untrusted")) {
+            throw "Unexpected Authenticode signature status: $($sig.Status) ($($sig.StatusMessage))"
+          }
+      - name: Upload x64 test MSIX artifact & SHA256SUMS
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: totaldrop-windows-x64-test-msix
+          path: |
+            dist/TotalDrop_0.1.1.0_x64.msix
+            dist/SHA256SUMS
+          if-no-files-found: error
 
   deny:
     name: Dependencies (cargo-deny)
@@ -217,7 +360,7 @@ jobs:
   gate:
     name: CI
     if: always()
-    needs: [rust-bridge, windows-msvc-targets, deny, reuse, secrets]
+    needs: [rust-bridge, static-checks, windows-msvc-targets, windows-x64-msix, deny, reuse, secrets]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required checks passed

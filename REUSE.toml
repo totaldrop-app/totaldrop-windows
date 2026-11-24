@@ -11,17 +11,26 @@ precedence = "closest"
 SPDX-FileCopyrightText = "2026 The TotalDrop Contributors"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 
-# The protocol libraries and the translations that totaldrop-l10n compiles
-# into itself.
+# The protocol libraries, Windows bridge/FFI crates, and the translations that
+# totaldrop-l10n compiles into itself.
 [[annotations]]
 path = [
   "crates/totaldrop-crypto/**",
   "crates/totaldrop-proto/**",
   "crates/totaldrop-core/**",
   "crates/totaldrop-l10n/**",
+  "crates/totaldrop-windows-bridge/**",
+  "crates/totaldrop-windows-ffi/**",
   "l10n/**",
   "ui-winui3-fluent2/Strings/**",
 ]
 precedence = "closest"
 SPDX-FileCopyrightText = "2026 The TotalDrop Contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+# Generated Kose MSIX visual assets and Win32 application icon (`tools/render-windows-assets.py`).
+[[annotations]]
+path = "ui-winui3-fluent2/Assets/**"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 The TotalDrop Contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"

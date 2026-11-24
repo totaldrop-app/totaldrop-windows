@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text.Json;
 using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
@@ -69,7 +67,7 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         SetTitleBar(AppTitleBar);
 
         nint hwnd = WindowNative.GetWindowHandle(this);
-        WindowId windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
+        Microsoft.UI.WindowId windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
         AppWindow appWindow = AppWindow.GetFromWindowId(windowId);
         appWindow.Resize(new SizeInt32(720, 640));
 
@@ -108,6 +106,8 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private const string FallbackAppVersion = "0.1.0-beta.1";
+
     private void ApplyLocalizationAndFlowDirection()
     {
         IReadOnlyList<string> preferredLanguages = GlobalizationPreferences.Languages;
@@ -116,33 +116,17 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            nint jsonPtr = NativeBridge.ResolveUiBundleJson(joinedTags, regionTag, "0.2.0-beta.5");
-            if (jsonPtr != 0)
+            string appVersion = NativeBridge.TryGetVersionInfo()?.AppVersion ?? FallbackAppVersion;
+            BridgeUiBundleDto? bundle = NativeBridge.TryResolveUiBundle(joinedTags, regionTag, appVersion);
+            if (bundle is not null)
             {
-                try
-                {
-                    string? json = Marshal.PtrToStringUTF8(jsonPtr);
-                    if (!string.IsNullOrEmpty(json))
-                    {
-                        BridgeUiBundleDto? bundle = JsonSerializer.Deserialize(
-                            json,
-                            TotalDropJsonContext.Default.BridgeUiBundleDto);
-                        if (bundle is not null)
-                        {
-                            SendTabTitle = bundle.SendTitle;
-                            ReceiveTabTitle = bundle.ReceiveTitle;
-                            RootShellGrid.FlowDirection = bundle.FlowDirection == "RightToLeft"
-                                ? FlowDirection.RightToLeft
-                                : FlowDirection.LeftToRight;
-                            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SendTabTitle)));
-                            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ReceiveTabTitle)));
-                        }
-                    }
-                }
-                finally
-                {
-                    NativeBridge.FreeBridgeString(jsonPtr);
-                }
+                SendTabTitle = bundle.SendTitle;
+                ReceiveTabTitle = bundle.ReceiveTitle;
+                RootShellGrid.FlowDirection = bundle.FlowDirection == "RightToLeft"
+                    ? FlowDirection.RightToLeft
+                    : FlowDirection.LeftToRight;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SendTabTitle)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ReceiveTabTitle)));
             }
         }
         catch (DllNotFoundException)
@@ -247,28 +231,11 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            nint ptr = NativeBridge.ValidateUriJson(rawUri);
-            if (ptr != 0)
+            if (NativeBridge.TryValidateUri(rawUri, out ValidatedCodeDto? validated, out _)
+                && validated is not null)
             {
-                try
-                {
-                    string? json = Marshal.PtrToStringUTF8(ptr);
-                    if (!string.IsNullOrEmpty(json))
-                    {
-                        ValidatedCodeDto? validated = JsonSerializer.Deserialize(
-                            json,
-                            TotalDropJsonContext.Default.ValidatedCodeDto);
-                        if (validated is not null)
-                        {
-                            ReceiveVm.ApplyActivatedCode(validated.DisplayEnglish);
-                            return;
-                        }
-                    }
-                }
-                finally
-                {
-                    NativeBridge.FreeBridgeString(ptr);
-                }
+                ReceiveVm.ApplyActivatedCode(validated.DisplayEnglish);
+                return;
             }
         }
         catch (DllNotFoundException)

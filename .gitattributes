@@ -3,3 +3,6 @@
 
 *.sh text eol=lf
 *.py text eol=lf
+*.resw text eol=lf
+*.json text eol=lf
+*.arb text eol=lf

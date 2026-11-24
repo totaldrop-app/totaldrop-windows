@@ -19,9 +19,10 @@ TotalDrop's invariant across every platform is strict: **protocol state machines
 │   ├── totaldrop-proto/                 # Wire messages, 2048-word TransferCode & totaldrop:// link grammar
 │   ├── totaldrop-core/                  # QUIC + relay transport, framing, pairing, path traversal guards
 │   ├── totaldrop-l10n/                  # Compile-time ARB -> ICU4X message & regional number/percent engine
-│   └── totaldrop-windows-bridge/        # Pure-Rust Windows 11 bridge: URI validation, Explorer IPC, 35-lang UI
-├── ui-winui3-fluent2/                   # 100% native WinUI 3 (Windows App SDK 1.7+) + C# 13 (.NET 9 Native AOT)
-│   ├── TotalDrop.WinUI.csproj           # net9.0-windows10.0.26100.0, PublishAot=true, CsWinRT, x64;ARM64
+│   ├── totaldrop-windows-bridge/        # Pure-Rust Windows 11 bridge: URI validation, Explorer IPC, 35-lang UI
+│   └── totaldrop-windows-ffi/           # Thin C ABI cdylib boundary (totaldrop_windows_ffi.dll)
+├── ui-winui3-fluent2/                   # 100% native WinUI 3 (Windows App SDK 1.8+) + C# 14 (.NET 10 Native AOT)
+│   ├── TotalDrop.WinUI.csproj           # net10.0-windows10.0.26100.0, PublishAot=true, CsWinRT, x64;ARM64
 │   ├── App.xaml(.cs)                    # Single-instance redirection, totaldrop:// URI & Share Target activation
 │   ├── MainWindow.xaml(.cs)             # MicaBackdrop + DesktopAcrylic fallback, live Accent & High Contrast
 │   ├── Views/SendPage.xaml(.cs)         # Fluent 2 drag-and-drop card, wormhole code, Narrator UIA semantics
@@ -45,15 +46,15 @@ TotalDrop's invariant across every platform is strict: **protocol state machines
 
 ## Key Engineering Decisions (ADR 0016)
 
-### 1. WinUI 3 + C# 13 `.NET 9 Native AOT` (`PublishAot=true`)
+### 1. WinUI 3 + C# 14 `.NET 10 Native AOT` (`PublishAot=true`)
 
-- **Why WinUI 3 instead of Qt or Flutter:** Per TotalDrop's platform design rules, desktop apps use the operating system's own toolkit so system theme behavior is exact rather than emulated. WinUI 3 (Windows App SDK 1.7+) provides authentic Windows 11 `MicaBackdrop` (with `DesktopAcrylicBackdrop` fallback when Mica is unavailable), custom `TitleBar` integration (`ExtendsContentIntoTitleBar`), live Windows system Accent Color tracking, `AccessibilitySettings.HighContrast` adaptation, `Segoe UI Variable` typography, and native UI Automation trees for Windows Narrator and NVDA.
+- **Why WinUI 3 instead of Qt or Flutter:** Per TotalDrop's platform design rules, desktop apps use the operating system's own toolkit so system theme behavior is exact rather than emulated. WinUI 3 (Windows App SDK 1.8+) provides authentic Windows 11 `MicaBackdrop` (with `DesktopAcrylicBackdrop` fallback when Mica is unavailable), custom `TitleBar` integration (`ExtendsContentIntoTitleBar`), live Windows system Accent Color tracking, `AccessibilitySettings.HighContrast` adaptation, `Segoe UI Variable` typography, and native UI Automation trees for Windows Narrator and NVDA.
 - **Zero JIT, zero reflection:** `TotalDrop.WinUI.csproj` compiles directly to native machine code (`PublishAot=true`, `CsWinRT`, `LibraryImport` source generation, and compile-time `x:Bind` bindings—no reflection `{Binding}`), avoiding a separate `.NET` runtime dependency and delivering instant cold startup from File Explorer right-click invocations.
 - **Reduced motion (`UISettings.AnimationsEnabled`):** `totaldrop_windows_bridge::should_animate_mark` binds the TotalDrop corner mark (`Kose`) animation directly to Windows *Settings -> Accessibility -> Visual effects -> Animation effects*. When disabled—or when no active transfer is in flight—the mark rests cleanly with zero animation frames.
 
 ### 2. Why `x64` and `ARM64` `explorer.exe` Require Native COM Isolation
 
-Windows 11's modern top-level right-click menu (**"Send with TotalDrop"**) is powered by an `IExplorerCommand` COM server (`CLSID {8E6D76B4-54A9-4D92-9A57-2F7D25F8B216}`) declared through `desktop4:FileExplorerContextMenus` and `com:Extension` inside the MSIX package identity:
+Windows 11's modern top-level right-click menu (**"Send with TotalDrop"**) is powered by an `IExplorerCommand` COM server (`CLSID {8F6E3D72-4B9A-4E1C-9D3A-7C2F5A81E4B0}`) declared through `desktop4:FileExplorerContextMenus` and `com:Extension` inside the MSIX package identity:
 
 1. **No cross-architecture in-proc DLL loading:** On Intel/AMD PCs, `explorer.exe` is an `x86_64` process; on Snapdragon X / Copilot+ ARM64 PCs, `explorer.exe` is a native `ARM64` process. Windows cannot load an `x64` in-proc COM DLL into an `ARM64` `explorer.exe` (or vice versa)—doing so fails with `REGDB_E_CLASSNOTREG` and silently drops the context-menu verb on Windows on ARM.
 2. **No managed runtime inside `explorer.exe`:** Loading a managed CLR or heavy UI runtime in-process inside the user's shell risks DLL version conflicts, GC pauses on right-click, and shell crashes.
@@ -99,7 +100,7 @@ RUSTUP_TOOLCHAIN=stable cargo clippy --workspace --all-targets --locked -- -D wa
 To build the native Windows `x64` and `ARM64` MSIX packages on Windows 11 / CI runners:
 
 ```powershell
-# Build isolated x86_64 MSIX (Rust core + COM DLL + .NET 9 Native AOT WinUI 3)
+# Build isolated x86_64 MSIX (Rust FFI cdylib + .NET 10 Native AOT WinUI 3)
 pwsh -NoProfile -File .\target-x86_64\build-x64.ps1
 
 # Build isolated ARM64 MSIX and assemble unified x64+ARM64 .msixbundle

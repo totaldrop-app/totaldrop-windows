@@ -5,90 +5,335 @@
 
 <#
 .SYNOPSIS
-    Builds the isolated Windows 11 x86_64 slice of TotalDrop (Rust bridge +
-    native x64 Explorer COM server + WinUI 3 .NET 9 Native AOT executable +
-    x64 MSIX package) on GitHub's `windows-2025` runner (ADR 0016).
+    Builds the isolated Windows 11 x86_64 slice of TotalDrop (Rust C ABI FFI
+    cdylib + WinUI 3 .NET 10 Native AOT executable + MakePri resources.pri +
+    strict makeappx.exe x64 MSIX package) on GitHub's `windows-latest` runner
+    (ADR 0016).
 #>
 
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$Version = "0.2.0.0",
+    [string]$Version = "0.1.1.0",
 
     [Parameter()]
-    [switch]$SignEphemeralTestCert
+    [string]$OutputDir = "",
+
+    [Parameter()]
+    [Alias("SignEphemeralTestCert")]
+    [switch]$SelfSignEphemeral
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ScriptDir = $PSScriptRoot
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
-$StagingDir = Join-Path $RepoRoot "dist\staging-x64"
-$OutMsix = Join-Path $RepoRoot "dist\TotalDrop_${Version}_x64.msix"
+function Resolve-WindowsKitTool {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ToolName,
 
-Write-Host "==> [x64 1/4] Building Rust totaldrop-windows-bridge (x86_64-pc-windows-msvc)..."
+        [Parameter()]
+        [string]$PreferredArch = "x64"
+    )
+
+    $archOrder = if ($PreferredArch -eq "arm64") { @("arm64", "x64") } else { @("x64", "arm64") }
+
+    # 1. Installed Windows 10/11 SDK under Program Files (x86)\Windows Kits\10\bin\<version>\<arch>
+    $kitsBin = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    if (Test-Path -LiteralPath $kitsBin) {
+        $versionDirs = Get-ChildItem -LiteralPath $kitsBin -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.Name } -Descending
+        foreach ($vDir in $versionDirs) {
+            foreach ($arch in $archOrder) {
+                $candidate = Join-Path $vDir.FullName "$arch\$ToolName"
+                if (Test-Path -LiteralPath $candidate) {
+                    return $candidate
+                }
+            }
+        }
+    }
+
+    # 2. Restored NuGet Microsoft.Windows.SDK.BuildTools package
+    $nugetRoot = if (-not [string]::IsNullOrWhiteSpace($env:NUGET_PACKAGES)) {
+        $env:NUGET_PACKAGES
+    } else {
+        Join-Path $env:USERPROFILE ".nuget\packages"
+    }
+    $btRoot = Join-Path $nugetRoot "microsoft.windows.sdk.buildtools"
+    if (Test-Path -LiteralPath $btRoot) {
+        $pkgDirs = Get-ChildItem -LiteralPath $btRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending
+        foreach ($pkgDir in $pkgDirs) {
+            $binRoot = Join-Path $pkgDir.FullName "bin"
+            if (-not (Test-Path -LiteralPath $binRoot)) { continue }
+            $sdkDirs = Get-ChildItem -LiteralPath $binRoot -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+                Sort-Object { [version]$_.Name } -Descending
+            foreach ($sdkDir in $sdkDirs) {
+                foreach ($arch in $archOrder) {
+                    $candidate = Join-Path $sdkDir.FullName "$arch\$ToolName"
+                    if (Test-Path -LiteralPath $candidate) {
+                        return $candidate
+                    }
+                }
+            }
+        }
+    }
+
+    # 3. Ambient PATH fallback
+    $cmd = Get-Command $ToolName -ErrorAction SilentlyContinue
+    if ($null -ne $cmd) {
+        return $cmd.Source
+    }
+
+    throw "Required Windows SDK tool '$ToolName' not found in Windows Kits 10, NuGet BuildTools, or PATH."
+}
+
+$ScriptDir = $PSScriptRoot
+$RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..")).Path
+$ResolvedOutDir = if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+    Join-Path $RepoRoot "dist"
+} else {
+    $OutputDir
+}
+New-Item -ItemType Directory -Force -Path $ResolvedOutDir | Out-Null
+$ResolvedOutDir = (Resolve-Path -LiteralPath $ResolvedOutDir).Path
+
+$WorkRoot = Join-Path $RepoRoot "dist\work-x64"
+$PublishDir = Join-Path $WorkRoot "publish-win-x64"
+$StagingDir = Join-Path $WorkRoot "staging-x64"
+$PriWorkDir = Join-Path $WorkRoot "pri-work-x64"
+$OutMsixName = "TotalDrop_${Version}_x64.msix"
+$OutMsix = Join-Path $ResolvedOutDir $OutMsixName
+$FfiDll = Join-Path $RepoRoot "target\x86_64-pc-windows-msvc\release\totaldrop_windows_ffi.dll"
+
+Write-Host "==> [x64 1/5] Building Rust totaldrop-windows-ffi cdylib (x86_64-pc-windows-msvc)..."
+$SavedRustFlags = $env:RUSTFLAGS
+$SavedEncodedRustFlags = $env:CARGO_ENCODED_RUSTFLAGS
 Push-Location $RepoRoot
 try {
-    $env:RUSTFLAGS = "-D warnings"
+    # Clear ambient RUSTFLAGS / CARGO_ENCODED_RUSTFLAGS so target-x86_64/cargo-config.toml
+    # (+crt-static, SIMD, /DEPENDENTLOADFLAG:0x800, /CETCOMPAT, ASLR, NX) applies in full.
+    Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+    Remove-Item Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue
     cargo build `
         --config (Join-Path $ScriptDir "cargo-config.toml") `
         --target x86_64-pc-windows-msvc `
-        -p totaldrop-windows-bridge `
+        -p totaldrop-windows-ffi `
         --release `
         --locked
     if ($LASTEXITCODE -ne 0) {
-        throw "cargo build (x86_64-pc-windows-msvc) failed with exit code $LASTEXITCODE"
+        throw "cargo build (totaldrop-windows-ffi, x86_64-pc-windows-msvc) failed with exit code $LASTEXITCODE"
+    }
+}
+finally {
+    if ($null -ne $SavedRustFlags) {
+        $env:RUSTFLAGS = $SavedRustFlags
+    }
+    if ($null -ne $SavedEncodedRustFlags) {
+        $env:CARGO_ENCODED_RUSTFLAGS = $SavedEncodedRustFlags
+    }
+    Pop-Location
+}
+
+if (-not (Test-Path -LiteralPath $FfiDll)) {
+    throw "Expected native FFI DLL missing at $FfiDll"
+}
+
+Write-Host "==> [x64 2/5] Publishing WinUI 3 shell with .NET 10 LTS Native AOT (win-x64)..."
+if (Test-Path -LiteralPath $PublishDir) {
+    Remove-Item -LiteralPath $PublishDir -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $PublishDir | Out-Null
+
+Push-Location (Join-Path $RepoRoot "ui-winui3-fluent2")
+try {
+    $DotnetVersion = ((& dotnet --version) -join "").Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet --version failed with exit code $LASTEXITCODE"
+    }
+    Write-Host "    Active dotnet SDK: $DotnetVersion"
+    if ($DotnetVersion -notlike "10.0.*") {
+        throw "Expected .NET 10.0.x LTS SDK (pinned by ui-winui3-fluent2/global.json), got '$DotnetVersion'"
+    }
+
+    dotnet publish TotalDrop.WinUI.csproj `
+        -r win-x64 `
+        -c Release `
+        -p:Platform=x64 `
+        -p:PublishAot=true `
+        -p:WindowsAppSDKSelfContained=false `
+        -o $PublishDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet publish (win-x64 Native AOT) failed with exit code $LASTEXITCODE"
     }
 }
 finally {
     Pop-Location
 }
 
-Write-Host "==> [x64 2/4] Publishing WinUI 3 shell with .NET 9 Native AOT (win-x64)..."
-$PublishDir = Join-Path $RepoRoot "dist\publish-win-x64"
-dotnet publish (Join-Path $RepoRoot "ui-winui3-fluent2\TotalDrop.WinUI.csproj") `
-    -r win-x64 `
-    -c Release `
-    -p:Platform=x64 `
-    -p:PublishAot=true `
-    -p:WindowsAppSDKSelfContained=false `
-    -o $PublishDir
-if ($LASTEXITCODE -ne 0) {
-    throw "dotnet publish (win-x64 Native AOT) failed with exit code $LASTEXITCODE"
-}
+$MakePriExe = Resolve-WindowsKitTool -ToolName "MakePri.exe" -PreferredArch "x64"
+$MakeAppxExe = Resolve-WindowsKitTool -ToolName "makeappx.exe" -PreferredArch "x64"
+Write-Host "    MakePri:  $MakePriExe"
+Write-Host "    MakeAppx: $MakeAppxExe"
 
-Write-Host "==> [x64 3/4] Staging x64 MSIX layout..."
-if (Test-Path $StagingDir) {
-    Remove-Item -Recurse -Force $StagingDir
+Write-Host "==> [x64 3/5] Staging x64 MSIX layout & compiling unified resources.pri..."
+if (Test-Path -LiteralPath $StagingDir) {
+    Remove-Item -LiteralPath $StagingDir -Recurse -Force
 }
-New-Item -ItemType Directory -Path $StagingDir | Out-Null
+if (Test-Path -LiteralPath $PriWorkDir) {
+    Remove-Item -LiteralPath $PriWorkDir -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $StagingDir, $PriWorkDir | Out-Null
+
 Copy-Item -Path (Join-Path $PublishDir "*") -Destination $StagingDir -Recurse -Force
-Copy-Item `
-    -Path (Join-Path $ScriptDir "Package.x64.appxmanifest") `
-    -Destination (Join-Path $StagingDir "AppxManifest.xml") `
-    -Force
 
-Write-Host "==> [x64 4/4] Packing TotalDrop_${Version}_x64.msix with makeappx.exe..."
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutMsix) | Out-Null
-makeappx.exe pack /o /nv /d $StagingDir /p $OutMsix
+# Strip debug symbols and any stale PRI files prior to MakePri indexing.
+Get-ChildItem -LiteralPath $StagingDir -Include "*.pdb", "*.pri" -Recurse -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force
+
+foreach ($requiredRel in @(
+    "totaldrop-winui.exe",
+    "totaldrop_windows_ffi.dll",
+    "App.xbf",
+    "MainWindow.xbf",
+    "Views\SendPage.xbf",
+    "Views\ReceivePage.xbf",
+    "Assets\StoreLogo.scale-100.png",
+    "Assets\TotalDrop.ico"
+)) {
+    $reqPath = Join-Path $StagingDir $requiredRel
+    if (-not (Test-Path -LiteralPath $reqPath)) {
+        throw "Required staged payload missing: $reqPath"
+    }
+}
+
+if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+    throw "Invalid MSIX -Version '$Version'. Expected four-part numeric version (Major.Minor.Build.Revision)."
+}
+$StagedManifest = Join-Path $StagingDir "AppxManifest.xml"
+Copy-Item `
+    -LiteralPath (Join-Path $ScriptDir "Package.x64.appxmanifest") `
+    -Destination $StagedManifest `
+    -Force
+$manifestDoc = [System.Xml.XmlDocument]::new()
+$manifestDoc.PreserveWhitespace = $true
+$manifestDoc.XmlResolver = $null
+$manifestDoc.Load($StagedManifest)
+$nsMgr = [System.Xml.XmlNamespaceManager]::new($manifestDoc.NameTable)
+$nsMgr.AddNamespace("appx", "http://schemas.microsoft.com/appx/manifest/foundation/windows10")
+$identityNode = $manifestDoc.SelectSingleNode("/appx:Package/appx:Identity", $nsMgr)
+if ($null -eq $identityNode) {
+    throw "Staged AppxManifest.xml is missing /Package/Identity."
+}
+if ($identityNode.GetAttribute("Version") -ne $Version) {
+    Write-Host "    Patching staged AppxManifest.xml Identity/@Version: $($identityNode.GetAttribute('Version')) -> $Version"
+    $identityNode.SetAttribute("Version", $Version)
+    $manifestDoc.Save($StagedManifest)
+}
+
+# Stage 35-locale .resw catalogs temporarily for MakePri indexing (exclude locales.json).
+$StringsSrc = Join-Path $RepoRoot "ui-winui3-fluent2\Strings"
+$StringsStage = Join-Path $StagingDir "Strings"
+$ReswFiles = @(Get-ChildItem -LiteralPath $StringsSrc -Filter "Resources.resw" -Recurse -File)
+if ($ReswFiles.Count -ne 35) {
+    throw "Expected 35 Resources.resw locale catalogs under $StringsSrc, found $($ReswFiles.Count)"
+}
+foreach ($resw in $ReswFiles) {
+    $localeTag = $resw.Directory.Name
+    $destDir = Join-Path $StringsStage $localeTag
+    New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    Copy-Item -LiteralPath $resw.FullName -Destination (Join-Path $destDir "Resources.resw") -Force
+}
+
+$PriConfigPath = Join-Path $PriWorkDir "priconfig-x64.xml"
+$ResourcesPri = Join-Path $StagingDir "resources.pri"
+$PriDumpPath = Join-Path $PriWorkDir "resources-x64.pri.xml"
+
+& $MakePriExe createconfig /cf $PriConfigPath /dq lang-en /o /pv 10.0.0
+if ($LASTEXITCODE -ne 0) {
+    throw "MakePri.exe createconfig failed with exit code $LASTEXITCODE"
+}
+
+# Remove <packaging> autoResourcePackage splits so MakePri emits one unified resources.pri.
+[xml]$priXml = Get-Content -LiteralPath $PriConfigPath -Raw
+$pkgNode = $priXml.SelectSingleNode("/resources/packaging")
+if ($null -ne $pkgNode) {
+    [void]$priXml.resources.RemoveChild($pkgNode)
+}
+$priXml.Save($PriConfigPath)
+
+& $MakePriExe new `
+    /pr $StagingDir `
+    /cf $PriConfigPath `
+    /mn (Join-Path $StagingDir "AppxManifest.xml") `
+    /of $ResourcesPri `
+    /o
+if ($LASTEXITCODE -ne 0) {
+    throw "MakePri.exe new failed with exit code $LASTEXITCODE"
+}
+
+if (-not (Test-Path -LiteralPath $ResourcesPri) -or (Get-Item -LiteralPath $ResourcesPri).Length -le 0) {
+    throw "MakePri.exe did not generate a non-empty resources.pri at $ResourcesPri"
+}
+
+$splitPris = @(Get-ChildItem -LiteralPath $StagingDir -Filter "resources.*.pri" -File -ErrorAction SilentlyContinue)
+if ($splitPris.Count -gt 0) {
+    throw "Unexpected split PRI files generated in staging directory: $($splitPris.Name -join ', ')"
+}
+
+& $MakePriExe dump /if $ResourcesPri /of $PriDumpPath /dt detailed /o
+if ($LASTEXITCODE -ne 0) {
+    throw "MakePri.exe dump failed with exit code $LASTEXITCODE"
+}
+
+# Remove raw .resw files after MakePri compiled them into resources.pri.
+Remove-Item -LiteralPath $StringsStage -Recurse -Force
+
+Write-Host "==> [x64 4/5] Packing $OutMsixName with strict makeappx.exe (no /nv)..."
+& $MakeAppxExe pack /o /h SHA256 /d $StagingDir /p $OutMsix
 if ($LASTEXITCODE -ne 0) {
     throw "makeappx.exe pack (x64) failed with exit code $LASTEXITCODE"
 }
 
-if ($SignEphemeralTestCert) {
-    Write-Host "==> Signing x64 CI test MSIX with ephemeral self-signed certificate (not distributed, ADR 0016)..."
-    $Cert = New-SelfSignedCertificate `
-        -Type Custom `
-        -Subject "CN=TotalDrop" `
-        -KeyUsage DigitalSignature `
-        -FriendlyName "TotalDrop Ephemeral CI Test Cert" `
-        -CertStoreLocation "Cert:\CurrentUser\My" `
-        -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
-    signtool.exe sign /fd SHA256 /sha1 $Cert.Thumbprint $OutMsix
-    if ($LASTEXITCODE -ne 0) {
-        throw "signtool.exe failed with exit code $LASTEXITCODE"
+if ($SelfSignEphemeral) {
+    $SignToolExe = Resolve-WindowsKitTool -ToolName "signtool.exe" -PreferredArch "x64"
+    Write-Host "==> [x64 5/5] Signing CI test MSIX with ephemeral zero-PFX self-signed cert (ADR 0016)..."
+    Write-Host "    SignTool: $SignToolExe"
+    $Cert = $null
+    try {
+        $Cert = New-SelfSignedCertificate `
+            -Type Custom `
+            -Subject "CN=TotalDrop" `
+            -KeyUsage DigitalSignature `
+            -KeyAlgorithm RSA `
+            -KeyLength 2048 `
+            -HashAlgorithm SHA256 `
+            -NotAfter (Get-Date).AddDays(1) `
+            -FriendlyName "TotalDrop Ephemeral CI Test Cert" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+        & $SignToolExe sign /fd SHA256 /sha1 $Cert.Thumbprint $OutMsix
+        if ($LASTEXITCODE -ne 0) {
+            throw "signtool.exe sign failed with exit code $LASTEXITCODE"
+        }
     }
+    finally {
+        if ($null -ne $Cert -and (Test-Path -LiteralPath "Cert:\CurrentUser\My\$($Cert.Thumbprint)")) {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($Cert.Thumbprint)" -Force
+        }
+    }
+} else {
+    Write-Host "==> [x64 5/5] Skipping ephemeral signing (unsigned Store-ready MSIX)."
 }
 
-Write-Host "==> Built x64 MSIX: $OutMsix"
+$HashHex = (Get-FileHash -Algorithm SHA256 -LiteralPath $OutMsix).Hash.ToLowerInvariant()
+$ChecksumsPath = Join-Path $ResolvedOutDir "SHA256SUMS"
+[System.IO.File]::WriteAllText(
+    $ChecksumsPath,
+    "$HashHex  $OutMsixName`n",
+    [System.Text.UTF8Encoding]::new($false)
+)
+
+Write-Host "==> Built x64 MSIX: $OutMsix (SHA-256: $HashHex)"

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The TotalDrop Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-using System.Runtime.InteropServices;
+using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
@@ -20,16 +20,6 @@ namespace TotalDrop.WinUI.Views;
 /// </summary>
 public sealed partial class SendPage : Page
 {
-    [ComImport]
-    [Guid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IDataTransferManagerInterop
-    {
-        nint GetForWindow([In] nint appWindow, [In] ref Guid riid);
-
-        void ShowShareUIForWindow([In] nint appWindow);
-    }
-
     public SendViewModel ViewModel { get; private set; } = new();
 
     public SendPage()
@@ -117,7 +107,7 @@ public sealed partial class SendPage : Page
         }
 
         // Actual code allocation delegates asynchronously to totaldrop-core::PreparedSend::new
-        // via totaldrop_windows_bridge.dll off the UI thread (ADR 0016).
+        // via totaldrop_windows_ffi.dll off the UI thread (ADR 0016).
         ViewModel.StatusCaption = "Waiting for the receiver…";
     }
 
@@ -135,13 +125,15 @@ public sealed partial class SendPage : Page
 
     private void OnShareCodeClick(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrEmpty(ViewModel.TransferCode) || XamlRoot?.ContentIslandEnvironment is null)
+        if (string.IsNullOrEmpty(ViewModel.TransferCode))
         {
             return;
         }
 
-        nint hwnd = Win32Interop.GetWindowFromWindowId(XamlRoot.ContentIslandEnvironment.AppWindowId);
-        IDataTransferManagerInterop interop = DataTransferManager.As<IDataTransferManagerInterop>();
-        interop.ShowShareUIForWindow(hwnd);
+        // Phase 1 AOT-safe fallback: copy transfer code to clipboard; Phase 3 wires
+        // CsWinRT WinRT.Interop.IDataTransferManagerInterop + DataRequested Share Sheet.
+        DataPackage pkg = new();
+        pkg.SetText(ViewModel.TransferCode);
+        Clipboard.SetContent(pkg);
     }
 }

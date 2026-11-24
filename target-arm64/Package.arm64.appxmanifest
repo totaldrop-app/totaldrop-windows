@@ -4,21 +4,16 @@
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
-  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
-  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
-  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
-  IgnorableNamespaces="uap uap3 rescap desktop desktop2 desktop4 desktop5 com">
+  IgnorableNamespaces="uap rescap desktop2">
 
   <!-- Native ARM64 MSIX slice for Windows 11 on ARM / Snapdragon X Copilot+ PCs (ADR 0016, #86).
-       Native ARM64 explorer.exe requires an AA64 COM server (`ProcessorArchitecture="arm64"`). -->
+       Identity Name and Publisher are replaced by Partner Center reservation at Store submission. -->
   <Identity
     Name="TotalDrop.TotalDrop"
     Publisher="CN=TotalDrop"
-    Version="0.2.0.0"
+    Version="0.1.1.0"
     ProcessorArchitecture="arm64" />
 
   <Properties>
@@ -32,16 +27,16 @@
       Name="Windows.Desktop"
       MinVersion="10.0.19041.0"
       MaxVersionTested="10.0.26100.0" />
-    <!-- Windows App SDK 1.7 ARM64 Store-managed framework package (WindowsAppSDKSelfContained=false) -->
+    <!-- Windows App SDK 1.8 ARM64 Store-managed framework package (WindowsAppSDKSelfContained=false) -->
     <PackageDependency
-      Name="Microsoft.WindowsAppRuntime.1.7"
-      MinVersion="7000.400.0.0"
+      Name="Microsoft.WindowsAppRuntime.1.8"
+      MinVersion="8000.994.2142.0"
       Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
   </Dependencies>
 
   <!-- All 35 supported TotalDrop languages (ADR 0008, ADR 0016) -->
   <Resources>
-    <Resource Language="en-US" />
+    <Resource Language="en" />
     <Resource Language="ar" />
     <Resource Language="bn" />
     <Resource Language="cs" />
@@ -89,7 +84,13 @@
         Description="Send files straight to another device, end-to-end encrypted"
         BackgroundColor="#6D4AE0"
         Square150x150Logo="Assets\Square150x150Logo.png"
-        Square44x44Logo="Assets\Square44x44Logo.png" />
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          ShortName="TotalDrop"
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square71x71Logo="Assets\Square71x71Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
 
       <Extensions>
         <!-- 1. Protocol URI Activation: totaldrop://r/<code> -->
@@ -111,46 +112,25 @@
           </uap:ShareTarget>
         </uap:Extension>
 
-        <!-- 3. Native ARM64 (AA64) COM Server for native ARM64 explorer.exe on Snapdragon X Copilot+ PCs -->
-        <com:Extension Category="windows.comServer">
-          <com:ComServer>
-            <com:SurrogateServer DisplayName="TotalDrop Explorer Verb Host (ARM64)">
-              <com:Class
-                Id="8f6e3d72-4b9a-4e1c-9d3a-7c2f5a81e4b0"
-                Path="totaldrop_explorer_ext.dll"
-                ThreadingModel="Apartment" />
-            </com:SurrogateServer>
-          </com:ComServer>
-        </com:Extension>
-
-        <!-- 4. Windows 11 Top-Level File Explorer Context Menu ("Send with TotalDrop") -->
-        <desktop4:Extension Category="windows.fileExplorerContextMenus">
-          <desktop4:FileExplorerContextMenus>
-            <desktop5:ItemType Type="*">
-              <desktop5:Verb
-                Id="TotalDropSendFiles"
-                Clsid="8f6e3d72-4b9a-4e1c-9d3a-7c2f5a81e4b0" />
-            </desktop5:ItemType>
-            <desktop5:ItemType Type="Directory">
-              <desktop5:Verb
-                Id="TotalDropSendFolder"
-                Clsid="8f6e3d72-4b9a-4e1c-9d3a-7c2f5a81e4b0" />
-            </desktop5:ItemType>
-          </desktop4:FileExplorerContextMenus>
-        </desktop4:Extension>
-
-        <!-- 5. Scoped UDP QUIC Firewall Rule installed/removed with MSIX package (ADR 0016) -->
-        <desktop2:Extension Category="windows.firewallRules">
-          <desktop2:FirewallRules Executable="totaldrop-winui.exe">
-            <desktop2:Rule
-              Direction="in"
-              IPProtocol="UDP"
-              Profile="private" />
-          </desktop2:FirewallRules>
-        </desktop2:Extension>
+        <!-- Phase 3 re-adds com:Extension (windows.comServer -> totaldrop_explorer_ext.dll,
+             CLSID 8f6e3d72-4b9a-4e1c-9d3a-7c2f5a81e4b0) and desktop4:Extension
+             (windows.fileExplorerContextMenus) once crates/totaldrop-explorer-ext is built,
+             so Phase 1 makeappx.exe pack validates strictly without /nv. -->
       </Extensions>
     </Application>
   </Applications>
+
+  <Extensions>
+    <!-- Scoped UDP QUIC Firewall Rule installed/removed with MSIX package (ADR 0016) -->
+    <desktop2:Extension Category="windows.firewallRules">
+      <desktop2:FirewallRules Executable="totaldrop-winui.exe">
+        <desktop2:Rule
+          Direction="in"
+          IPProtocol="UDP"
+          Profile="private" />
+      </desktop2:FirewallRules>
+    </desktop2:Extension>
+  </Extensions>
 
   <Capabilities>
     <Capability Name="internetClient" />

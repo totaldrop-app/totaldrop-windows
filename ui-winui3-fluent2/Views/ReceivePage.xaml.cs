@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The TotalDrop Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-using System.Runtime.InteropServices;
-using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
@@ -14,7 +12,7 @@ namespace TotalDrop.WinUI.Views;
 
 /// <summary>
 /// Fluent 2 Receive screen code-behind delegating code parsing, rendezvous
-/// pairing, and verified chunk reception to <c>totaldrop_windows_bridge.dll</c>.
+/// pairing, and verified chunk reception to <c>totaldrop_windows_ffi.dll</c>.
 /// </summary>
 public sealed partial class ReceivePage : Page
 {
@@ -57,29 +55,12 @@ public sealed partial class ReceivePage : Page
 
         try
         {
-            nint ptr = NativeBridge.ValidateUserInputJson(typed);
-            if (ptr != 0)
+            if (NativeBridge.TryValidateUserInput(typed, out ValidatedCodeDto? validated, out _)
+                && validated is not null)
             {
-                try
-                {
-                    string? json = Marshal.PtrToStringUTF8(ptr);
-                    if (!string.IsNullOrEmpty(json))
-                    {
-                        ValidatedCodeDto? validated = JsonSerializer.Deserialize(
-                            json,
-                            TotalDropJsonContext.Default.ValidatedCodeDto);
-                        if (validated is not null)
-                        {
-                            ViewModel.CodeInput = validated.DisplayEnglish;
-                            ViewModel.ValidationMessage = string.Empty;
-                            return;
-                        }
-                    }
-                }
-                finally
-                {
-                    NativeBridge.FreeBridgeString(ptr);
-                }
+                ViewModel.CodeInput = validated.DisplayEnglish;
+                ViewModel.ValidationMessage = string.Empty;
+                return;
             }
         }
         catch (DllNotFoundException)

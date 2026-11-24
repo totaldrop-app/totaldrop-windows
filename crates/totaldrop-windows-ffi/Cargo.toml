@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The TotalDrop Contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "totaldrop-windows-ffi"
+version = "0.1.0-beta.1"
+description = "Thin C ABI FFI cdylib boundary for TotalDrop on Windows 11 (WinUI 3 Native AOT)"
+license = "MIT OR Apache-2.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "totaldrop_windows_ffi"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+totaldrop-windows-bridge = { version = "0.2.0-beta.5", path = "../totaldrop-windows-bridge" }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+arithmetic_side_effects = "warn"

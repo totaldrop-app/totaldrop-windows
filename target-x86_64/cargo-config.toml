@@ -21,7 +21,8 @@ target = "x86_64-pc-windows-msvc"
 rustflags = [
     # Hardware carry-less multiplication (PCLMULQDQ) + AES-NI guaranteed on Windows 11 x64 CPUs;
     # AVX2 (`+avx2`) is runtime-dispatched by blake3 and ring on Haswell / Zen+ and newer.
-    "-C", "target-feature=+aes,+pclmulqdq,+sse4.2",
+    # Static MSVC CRT (`+crt-static`) eliminates VCRUNTIME140*.dll imports (Microsoft Store Policy 10.2.4.1).
+    "-C", "target-feature=+aes,+pclmulqdq,+sse4.2,+crt-static",
     # Harden Win32 DLL search order (`LOAD_LIBRARY_SEARCH_SYSTEM32` = 0x800) against DLL planting.
     "-C", "link-arg=/DEPENDENTLOADFLAG:0x800",
     # Enable Intel CET / AMD Shadow Stack compatibility and 64-bit high-entropy ASLR.

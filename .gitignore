@@ -19,6 +19,10 @@
 *.cer
 *.pfx
 
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
 # Editor / OS scratch files
 *.swp
 .DS_Store

@@ -7,7 +7,7 @@
 # isolated x86_64 MSIX installer metadata for CI verification and Store parity.
 
 PackageIdentifier: app.totaldrop.TotalDrop
-PackageVersion: 0.2.0-beta.5
+PackageVersion: 0.1.0-beta.1
 PackageLocale: en-US
 Publisher: TotalDrop
 PublisherUrl: https://totaldrop.app
@@ -41,7 +41,7 @@ Installers:
     MinimumOSVersion: 10.0.19041.0
     Platform:
       - Windows.Desktop
-    InstallerUrl: https://totaldrop.app/store/msix-only-see-adr-0016/TotalDrop_0.2.0.0_x64.msix
+    InstallerUrl: https://totaldrop.app/store/msix-only-see-adr-0016/TotalDrop_0.1.1.0_x64.msix
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
     SignatureSha256: 0000000000000000000000000000000000000000000000000000000000000000
 ManifestType: singleton

@@ -106,7 +106,8 @@
                 Background="{ThemeResource TotalDropCardBackgroundBrush}"
                 BorderBrush="{ThemeResource TotalDropCardStrokeBrush}"
                 BorderThickness="1"
-                AutomationProperties.LandmarkType="Region"
+                AutomationProperties.LandmarkType="Custom"
+                AutomationProperties.LocalizedLandmarkType="Incoming files offer"
                 AutomationProperties.Name="Incoming files offer">
                 <StackPanel Spacing="12">
                     <TextBlock

@@ -19,7 +19,8 @@ target = "aarch64-pc-windows-msvc"
 rustflags = [
     # ARMv8 NEON is baseline on aarch64; explicitly enable ARMv8 Cryptography (`+aes` includes
     # `PMULL` / `PMULL2` polynomial carry-less multiply, plus `+sha2`) mandated by Windows 11 ARM64.
-    "-C", "target-feature=+neon,+aes,+sha2",
+    # Static MSVC CRT (`+crt-static`) eliminates VCRUNTIME140*.dll imports (Microsoft Store Policy 10.2.4.1).
+    "-C", "target-feature=+neon,+aes,+sha2,+crt-static",
     # Harden Win32 DLL search order (`LOAD_LIBRARY_SEARCH_SYSTEM32` = 0x800) against DLL planting.
     "-C", "link-arg=/DEPENDENTLOADFLAG:0x800",
     # Enable 64-bit high-entropy ASLR and NX on Windows 11 ARM64.

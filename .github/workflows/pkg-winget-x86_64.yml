@@ -34,6 +34,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Setup Python 3.12 (x64)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: x64
       - name: Validate isolated sub-platform recipe (windows-winget-x86_64)
         shell: bash
         run: |
@@ -51,15 +56,15 @@ jobs:
           sh subplatforms/winget/x86_64/build.sh --package-staged "$stage_dir" "$out_dir"
           sh subplatforms/winget/x86_64/verify.sh "$out_dir"
       - name: Upload sub-platform artifact & SHA256SUMS
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-winget-x86_64
           path: |
-            ${{ runner.temp }}/dist-winget-x86_64/TotalDrop-0.3.0-beta.6-winget-x64.zip
+            ${{ runner.temp }}/dist-winget-x86_64/TotalDrop-0.1.0-beta.1-winget-x64.zip
             ${{ runner.temp }}/dist-winget-x86_64/SHA256SUMS
           if-no-files-found: error
       - name: Attest Sigstore OIDC build provenance on release tags
         if: startsWith(github.ref, 'refs/tags/windows-winget-x86_64-v')
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v2.4.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/dist-winget-x86_64/TotalDrop-0.3.0-beta.6-winget-x64.zip
+          subject-path: ${{ runner.temp }}/dist-winget-x86_64/TotalDrop-0.1.0-beta.1-winget-x64.zip

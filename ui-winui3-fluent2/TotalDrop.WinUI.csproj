@@ -6,25 +6,39 @@
     <OutputType>WinExe</OutputType>
     <AssemblyName>totaldrop-winui</AssemblyName>
     <RootNamespace>TotalDrop.WinUI</RootNamespace>
-    <TargetFramework>net9.0-windows10.0.26100.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <Version>0.1.0-beta.1</Version>
+    <InformationalVersion>0.1.0-beta.1</InformationalVersion>
+    <AssemblyVersion>0.1.1.0</AssemblyVersion>
+    <FileVersion>0.1.1.0</FileVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\TotalDrop.ico</ApplicationIcon>
     <Platforms>x64;ARM64</Platforms>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
-    <LangVersion>13.0</LangVersion>
+    <LangVersion>14.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- Allowed strictly for source-generated [LibraryImport] P/Invoke to totaldrop_windows_bridge.dll -->
+    <!-- Allowed strictly for source-generated [LibraryImport] P/Invoke to totaldrop_windows_ffi.dll -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-    <!-- WinUI 3 + Microsoft Store Framework Dependency (ADR 0016) -->
+    <!-- WinUI 3 + Microsoft Store Framework Dependency (ADR 0016).
+         Package manifests live in target-x86_64/ and target-arm64/ and are indexed/packed by
+         build-x64.ps1 / build-arm64.ps1 via MakePri.exe + makeappx.exe. Disabling both
+         EnableMsixTooling and EnableCoreMrtTooling preserves .NET 10 SDK's Native AOT Publish
+         target while WindowsPackageType=MSIX selects packaged WinAppSDK runtime initialization. -->
     <UseWinUI>true</UseWinUI>
-    <EnableMsixTooling>true</EnableMsixTooling>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
     <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
     <WindowsPackageType>MSIX</WindowsPackageType>
+    <EnableDefaultAssets>false</EnableDefaultAssets>
+    <GenerateAppInstallerFile>false</GenerateAppInstallerFile>
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
 
-    <!-- .NET 9 Native AOT + CsWinRT 2.2 Trim-Safe Configuration (Zero Reflection) -->
+    <!-- .NET 10 LTS Native AOT + CsWinRT Trim-Safe Configuration (Zero Reflection) -->
     <PublishAot>true</PublishAot>
     <CsWinRTAotOptimizerEnabled>true</CsWinRTAotOptimizerEnabled>
     <CsWinRTAotWarningLevel>2</CsWinRTAotWarningLevel>
@@ -32,28 +46,72 @@
     <StackTraceSupport>false</StackTraceSupport>
     <!-- Preserve Windows OS ICU globalization for 35 languages & CLDR regional formatting (ADR 0008, ADR 0016) -->
     <InvariantGlobalization>false</InvariantGlobalization>
-    <!-- Disable legacy reflection-based XAML {Binding}; enforce compile-time x:Bind -->
-    <EnableXamlCompilerReflection>false</EnableXamlCompilerReflection>
+    <!-- Disable legacy reflection-based XAML type info; enforce compile-time x:Bind -->
+    <EnableTypeInfoReflection>false</EnableTypeInfoReflection>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Platform)' == 'x64'">
+    <_NativeBridgeDll>..\target\x86_64-pc-windows-msvc\release\totaldrop_windows_ffi.dll</_NativeBridgeDll>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Platform)' == 'ARM64'">
+    <_NativeBridgeDll>..\target\aarch64-pc-windows-msvc\release\totaldrop_windows_ffi.dll</_NativeBridgeDll>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250401001" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.9457" />
   </ItemGroup>
 
-  <!-- Architecture-matched native Rust DLL staged next to totaldrop-winui.exe -->
+  <!-- Deterministic Kose MSIX visual assets and Win32 icon staged into build/publish output -->
+  <ItemGroup>
+    <Content Remove="Assets\**" />
+    <None Remove="Assets\**" />
+    <Content Include="Assets\**\*"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Architecture-matched native Rust FFI DLL staged next to totaldrop-winui.exe -->
+  <ItemGroup>
+    <Content Include="$(_NativeBridgeDll)"
+             Condition="'$(DesignTimeBuild)' != 'true' and '$(_NativeBridgeDll)' != ''"
+             Link="totaldrop_windows_ffi.dll"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Deterministically emit CET_COMPAT (Debug Directory Type=20, bit 0x0001) on x64 Native AOT link -->
   <ItemGroup Condition="'$(Platform)' == 'x64'">
-    <Content Include="..\target\x86_64-pc-windows-msvc\release\totaldrop_windows_bridge.dll"
-             Condition="Exists('..\target\x86_64-pc-windows-msvc\release\totaldrop_windows_bridge.dll')"
-             Link="totaldrop_windows_bridge.dll"
-             CopyToOutputDirectory="PreserveNewest" />
+    <LinkerArg Include="/CETCOMPAT" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(Platform)' == 'ARM64'">
-    <Content Include="..\target\aarch64-pc-windows-msvc\release\totaldrop_windows_bridge.dll"
-             Condition="Exists('..\target\aarch64-pc-windows-msvc\release\totaldrop_windows_bridge.dll')"
-             Link="totaldrop_windows_bridge.dll"
-             CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
+  <!-- Fail loudly if totaldrop_windows_ffi.dll has not been built for the target architecture -->
+  <Target Name="VerifyNativeBridgeDll" BeforeTargets="Build;Publish">
+    <Error Condition="'$(_NativeBridgeDll)' == ''"
+           Text="Unsupported Platform '$(Platform)'. Specify -p:Platform=x64 or -p:Platform=ARM64." />
+    <Error Condition="!Exists('$(_NativeBridgeDll)')"
+           Text="Native Rust FFI DLL not found at '$(_NativeBridgeDll)'. Build crates/totaldrop-windows-ffi for '$(Platform)' first." />
+  </Target>
+
+  <!-- Ensure compiled WinUI 3 .xbf files flow into dotnet publish output when EnableMsixTooling=false -->
+  <Target Name="AddCompiledXbfToPublish"
+          DependsOnTargets="Prep_ComputeProcessXamlFiles"
+          AfterTargets="ComputeResolvedFilesToPublishList"
+          BeforeTargets="_CopyResolvedFilesToPublishPreserveNewest"
+          Condition="'$(AppxPackage)' != 'true'">
+    <ItemGroup>
+      <_PublishXbfFiles Include="@(GeneratedXamlSrc->'%(FullPath)')" Condition="'%(Extension)' == '.xbf'" />
+    </ItemGroup>
+    <AssignTargetPath Files="@(_PublishXbfFiles)" RootFolder="$(XamlGeneratedOutputPath)">
+      <Output TaskParameter="AssignedFiles" ItemName="_PublishXbfFilesWithTargetPath" />
+    </AssignTargetPath>
+    <ItemGroup>
+      <ResolvedFileToPublish Include="@(_PublishXbfFilesWithTargetPath)">
+        <RelativePath>%(_PublishXbfFilesWithTargetPath.TargetPath)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 
 </Project>
