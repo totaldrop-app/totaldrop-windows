@@ -619,6 +619,8 @@ public sealed partial class SendViewModel : ObservableViewModel
 
     public Action<NotificationEventInput>? BackgroundNotificationReady { get; set; }
 
+    public Action? SessionPollingRequested { get; set; }
+
     public ulong ActiveSessionId { get; set; }
 
     public ulong DoneBytes { get; private set; }
@@ -1447,6 +1449,8 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
     public Action? TransferLifecycleChanged { get; set; }
 
     public Action<NotificationEventInput>? BackgroundNotificationReady { get; set; }
+
+    public Action? SessionPollingRequested { get; set; }
 
     public ulong ActiveSessionId { get; set; }
 

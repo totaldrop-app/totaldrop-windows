@@ -239,8 +239,13 @@ public static class NotificationPlanner
     {
         if (!string.IsNullOrWhiteSpace(input.ErrorL10nKey))
         {
-            string keyFormatted = StripIllegalXmlControlChars(localizer.FormatMessage(input.ErrorL10nKey));
-            if (!string.IsNullOrWhiteSpace(keyFormatted))
+            string rawFormatted = string.Equals(input.ErrorL10nKey, "sendTextTooLong", StringComparison.Ordinal)
+                ? localizer.FormatMessage(
+                    "sendTextTooLong",
+                    MessageArg.FromText("size", localizer.FormatBytes(NativeBridge.MaxTextBytes)))
+                : localizer.FormatMessage(input.ErrorL10nKey);
+            string keyFormatted = StripIllegalXmlControlChars(rawFormatted);
+            if (!string.IsNullOrWhiteSpace(keyFormatted) && !ContainsUnexpandedPlaceholder(keyFormatted))
             {
                 return keyFormatted;
             }
@@ -260,7 +265,7 @@ public static class NotificationPlanner
         if (!string.IsNullOrWhiteSpace(input.ErrorL10nKey))
         {
             string keyFormatted = StripIllegalXmlControlChars(localizer.FormatMessage(input.ErrorL10nKey));
-            if (!string.IsNullOrWhiteSpace(keyFormatted))
+            if (!string.IsNullOrWhiteSpace(keyFormatted) && !ContainsUnexpandedPlaceholder(keyFormatted))
             {
                 return keyFormatted;
             }
@@ -279,6 +284,48 @@ public static class NotificationPlanner
         }
 
         return input.IsText ? localizer.ReceiveTextDeclined : localizer.ReceiveDeclined;
+    }
+
+    private static bool ContainsUnexpandedPlaceholder(string text)
+    {
+        int i = 0;
+        while (i < text.Length)
+        {
+            int open = text.IndexOf('{', i);
+            if (open < 0)
+            {
+                return false;
+            }
+
+            int close = text.IndexOf('}', open + 1);
+            if (close < 0)
+            {
+                return false;
+            }
+
+            if (close > open + 1)
+            {
+                bool allIdent = true;
+                for (int k = open + 1; k < close; k++)
+                {
+                    char ch = text[k];
+                    if (ch is not ((>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '_'))
+                    {
+                        allIdent = false;
+                        break;
+                    }
+                }
+
+                if (allIdent)
+                {
+                    return true;
+                }
+            }
+
+            i = open + 1;
+        }
+
+        return false;
     }
 
     private static string NonEmptyOr(string? primary, string fallback)

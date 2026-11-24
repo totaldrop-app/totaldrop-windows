@@ -289,6 +289,36 @@ fn resolve_send_paths(raw_paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
     }
 }
 
+#[cfg(any(windows, test))]
+fn resolve_receive_dest_windows(dest_dir: &str) -> Result<PathBuf, String> {
+    let parsed = totaldrop_windows_bridge::activation::WindowsSelectionPath::parse(dest_dir)
+        .map_err(|e| e.to_string())?;
+    Ok(PathBuf::from(parsed.extended_path()))
+}
+
+fn resolve_receive_dest(dest_dir: &str) -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        resolve_receive_dest_windows(dest_dir)
+    }
+    #[cfg(not(windows))]
+    {
+        if dest_dir.is_empty() {
+            return Err("receive destination must not be empty".to_owned());
+        }
+        if dest_dir.as_bytes().contains(&0) {
+            return Err("receive destination must not contain a NUL byte".to_owned());
+        }
+        if dest_dir.chars().any(|c| {
+            let code = u32::from(c);
+            code <= 0x1F || (0x7F..=0x9F).contains(&code)
+        }) {
+            return Err("receive destination must not contain control characters".to_owned());
+        }
+        Ok(PathBuf::from(dest_dir))
+    }
+}
+
 fn is_valid_uri_scheme(scheme: &str) -> bool {
     let mut bytes = scheme.bytes();
     let Some(first) = bytes.next() else {
@@ -393,7 +423,7 @@ fn validate_session_server_urls(cfg: &BridgeNetworkConfig) -> Result<(), CoreErr
         return Err(CoreError::Rendezvous("invalid server address".to_owned()));
     }
 
-    let relay_trimmed = cfg.relay_server.trim();
+    let relay_trimmed = cfg.relay_server.trim_matches(' ');
     if !relay_trimmed.is_empty() && !BridgeNetworkConfig::is_valid_rendezvous_url(&cfg.relay_server)
     {
         return Err(CoreError::Rendezvous("invalid server address".to_owned()));
@@ -511,6 +541,16 @@ pub(crate) fn start_send_files(
     };
 
     TRANSFERS.spawn(&RUNTIME, async move {
+        if entry.cancel.is_cancelled() || entry.is_destroyed() {
+            let localized = LocalizedTransferError::from_core_error(
+                &CoreError::Stopped,
+                &entry.localizer,
+                true,
+            );
+            entry.finish_with(SessionEvent::from_localized_error(localized));
+            return;
+        }
+
         let paths = match resolve_send_paths(raw_paths) {
             Ok(p) => p,
             Err(msg) => {
@@ -617,6 +657,16 @@ pub(crate) fn start_send_text(
     };
 
     TRANSFERS.spawn(&RUNTIME, async move {
+        if entry.cancel.is_cancelled() || entry.is_destroyed() {
+            let localized = LocalizedTransferError::from_core_error(
+                &CoreError::Stopped,
+                &entry.localizer,
+                true,
+            );
+            entry.finish_with(SessionEvent::from_localized_error(localized));
+            return;
+        }
+
         if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_TEXT {
             let localized = LocalizedTransferError::text_too_long(&entry.localizer);
             entry.finish_with(SessionEvent::from_localized_error(localized));
@@ -639,6 +689,16 @@ pub(crate) fn start_send_text(
                 return;
             }
         };
+
+        if entry.cancel.is_cancelled() || entry.is_destroyed() {
+            let localized = LocalizedTransferError::from_core_error(
+                &CoreError::Stopped,
+                &entry.localizer,
+                true,
+            );
+            entry.finish_with(SessionEvent::from_localized_error(localized));
+            return;
+        }
 
         let code = ValidatedCode::from_proto(prepared.code());
         let (files, total_bytes) = prepared.totals();
@@ -701,6 +761,16 @@ pub(crate) fn start_receive_connect(
     };
 
     TRANSFERS.spawn(&RUNTIME, async move {
+        if entry.cancel.is_cancelled() || entry.is_destroyed() {
+            let localized = LocalizedTransferError::from_core_error(
+                &CoreError::Stopped,
+                &entry.localizer,
+                false,
+            );
+            entry.finish_with(SessionEvent::from_localized_error(localized));
+            return;
+        }
+
         if let Err(err) = validate_session_server_urls(&cfg) {
             let localized = LocalizedTransferError::from_core_error(&err, &entry.localizer, false);
             entry.finish_with(SessionEvent::from_localized_error(localized));
@@ -821,7 +891,21 @@ async fn run_accept_receive_files(
         return;
     }
 
-    let dest = PathBuf::from(&dest_dir);
+    let dest = match resolve_receive_dest(&dest_dir) {
+        Ok(path) => path,
+        Err(msg) => {
+            let _ = offer.stop().await;
+            entry.finish_with(SessionEvent::Failed {
+                kind: "storage".to_owned(),
+                l10n_key: "errorStorage".to_owned(),
+                cause: String::new(),
+                summary: entry.localizer.text("errorStorage"),
+                cause_detail: None,
+                technical_english: totaldrop_l10n::reveal_controls(&msg),
+            });
+            return;
+        }
+    };
     if std::fs::symlink_metadata(&dest).is_err()
         && let Err(io_err) = std::fs::create_dir_all(&dest)
     {
@@ -1663,5 +1747,117 @@ mod tests {
         // Walk unavailable (None) -> safe fallback preserving files + dirs == total_entries.
         assert_eq!(reconcile_manifest_counts(None, 5, 4133), (5, 0));
         assert_eq!(reconcile_manifest_counts(None, 1, 0), (1, 0));
+    }
+
+    #[test]
+    fn tier5_validate_session_server_urls_rejects_bidi_and_non_ascii() {
+        let hostile_urls = [
+            "wss://example.test/\u{202E}evil",
+            "wss://example.test/\u{2066}spoof",
+            "wss://example.test/\u{FDD0}bad",
+            "wss://example.test/\u{E0041}tag",
+            "wss://example.test\u{00A0}",
+        ];
+        for bad in hostile_urls {
+            let cfg_rdv = BridgeNetworkConfig {
+                rendezvous_server: bad.to_owned(),
+                relay_server: String::new(),
+                stun_server: String::new(),
+                privacy_relay_only: false,
+                stronger_three_word_code: false,
+            };
+            assert!(
+                validate_session_server_urls(&cfg_rdv).is_err(),
+                "rendezvous_server with Bidi/non-ASCII must be rejected: {bad:?}"
+            );
+
+            let cfg_relay = BridgeNetworkConfig {
+                rendezvous_server: "ws://127.0.0.1:4400".to_owned(),
+                relay_server: bad.to_owned(),
+                stun_server: String::new(),
+                privacy_relay_only: false,
+                stronger_three_word_code: false,
+            };
+            assert!(
+                validate_session_server_urls(&cfg_relay).is_err(),
+                "relay_server with Bidi/non-ASCII must be rejected: {bad:?}"
+            );
+        }
+
+        let cfg_nbsp_relay = BridgeNetworkConfig {
+            rendezvous_server: "ws://127.0.0.1:4400".to_owned(),
+            relay_server: "\u{00A0}".to_owned(),
+            stun_server: String::new(),
+            privacy_relay_only: false,
+            stronger_three_word_code: false,
+        };
+        assert!(validate_session_server_urls(&cfg_nbsp_relay).is_err());
+
+        let cfg_ok = BridgeNetworkConfig {
+            rendezvous_server: "ws://127.0.0.1:4400".to_owned(),
+            relay_server: String::new(),
+            stun_server: String::new(),
+            privacy_relay_only: false,
+            stronger_three_word_code: false,
+        };
+        assert!(validate_session_server_urls(&cfg_ok).is_ok());
+    }
+
+    #[test]
+    fn tier5_resolve_receive_dest_rejects_unsafe_paths_and_normalizes_long_windows_dest() {
+        // Cross-platform control/empty/NUL rejection.
+        for bad in [
+            "",
+            "/tmp/bad\0dir",
+            "/tmp/bad\x1bdir",
+            "/tmp/bad\u{009B}dir",
+        ] {
+            assert!(
+                resolve_receive_dest(bad).is_err(),
+                "resolve_receive_dest must reject {bad:?}"
+            );
+        }
+
+        // Windows path confinement & MAX_PATH extended-length normalization (exercised everywhere).
+        for bad_win in [
+            "",
+            r"..\escape",
+            r"relative\dir",
+            r"\\.\PhysicalDrive0",
+            r"\\?\GLOBALROOT\Device\Harddisk0",
+            r"C:\Users\Alice\CON",
+            r"C:\Users\Alice\Downloads:ads",
+            "C:\\Users\\Alice\\dir\x07",
+            "C:\\Users\\Alice\\dir\u{009B}",
+            r"C:\Users\Alice\..\Bob",
+        ] {
+            assert!(
+                resolve_receive_dest_windows(bad_win).is_err(),
+                "resolve_receive_dest_windows must reject {bad_win:?}"
+            );
+        }
+
+        let deep_seg = "d".repeat(60);
+        let long_win = format!(
+            r"C:\Users\Alice\Downloads\{deep_seg}\{deep_seg}\{deep_seg}\{deep_seg}\TotalDrop"
+        );
+        assert!(long_win.encode_utf16().count() > 260);
+        let normalized = resolve_receive_dest_windows(&long_win);
+        assert_eq!(
+            normalized,
+            Ok(PathBuf::from(format!(r"\\?\{long_win}"))),
+            "long Windows destination must normalize to \\\\?\\ extended path"
+        );
+
+        #[cfg(windows)]
+        {
+            assert!(resolve_receive_dest(r"\\.\PhysicalDrive0").is_err());
+            assert!(resolve_receive_dest(r"..\escape").is_err());
+            assert!(resolve_receive_dest(r"C:\Users\Alice\dir:stream").is_err());
+            assert_eq!(
+                resolve_receive_dest(&long_win),
+                Ok(PathBuf::from(format!(r"\\?\{long_win}")))
+            );
+        }
     }
 }

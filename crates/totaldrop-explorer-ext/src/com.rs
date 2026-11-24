@@ -86,13 +86,37 @@ fn saturating_add_ref(counter: &AtomicU32) -> u32 {
     }
 }
 
+/// Decrements a COM reference count unless it is already `0` (preventing
+/// underflow) or saturated at `u32::MAX` (immortal-on-overflow semantics).
+///
+/// Returns `(should_drop, new_ref_count)`.
+fn saturating_release_ref(counter: &AtomicU32) -> (bool, u32) {
+    match counter.try_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+        if cur == u32::MAX {
+            None
+        } else {
+            cur.checked_sub(1)
+        }
+    }) {
+        Ok(prev) => {
+            let new_count = prev.saturating_sub(1);
+            (new_count == 0, new_count)
+        }
+        Err(cur) => (false, cur),
+    }
+}
+
 fn increment_module_ref() {
     let _ = saturating_add_ref(&MODULE_REF_COUNT);
 }
 
 fn decrement_module_ref() {
     let _ = MODULE_REF_COUNT.try_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
-        cur.checked_sub(1)
+        if cur == u32::MAX {
+            None
+        } else {
+            cur.checked_sub(1)
+        }
     });
 }
 
@@ -373,19 +397,16 @@ unsafe extern "system" fn factory_release(this: *mut c_void) -> u32 {
     }
     let ptr_typed = this.cast::<TotalDropClassFactory>();
     // SAFETY: `ptr_typed` points to a live `TotalDropClassFactory`.
-    let prev = unsafe { &*ptr_typed }
-        .ref_count
-        .fetch_sub(1, Ordering::AcqRel);
-    if prev == 1 {
+    let ref_count = unsafe { &(*ptr_typed).ref_count };
+    let (should_drop, new_count) = saturating_release_ref(ref_count);
+    if should_drop {
         let _ = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: Reference count reached zero; this is the final owner.
             let owned = unsafe { Box::from_raw(ptr_typed) };
             drop(owned);
         }));
-        0
-    } else {
-        prev.saturating_sub(1)
     }
+    new_count
 }
 
 unsafe extern "system" fn factory_create_instance(
@@ -514,19 +535,16 @@ unsafe extern "system" fn cmd_release(this: *mut c_void) -> u32 {
     }
     let ptr_typed = this.cast::<TotalDropExplorerCommand>();
     // SAFETY: `ptr_typed` points to a live `TotalDropExplorerCommand`.
-    let prev = unsafe { &*ptr_typed }
-        .ref_count
-        .fetch_sub(1, Ordering::AcqRel);
-    if prev == 1 {
+    let ref_count = unsafe { &(*ptr_typed).ref_count };
+    let (should_drop, new_count) = saturating_release_ref(ref_count);
+    if should_drop {
         let _ = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: Reference count reached zero; this is the final owner.
             let owned = unsafe { Box::from_raw(ptr_typed) };
             drop(owned);
         }));
-        0
-    } else {
-        prev.saturating_sub(1)
     }
+    new_count
 }
 
 unsafe extern "system" fn cmd_get_title(
@@ -1272,6 +1290,18 @@ mod tests {
         E_NOTIMPL
     }
 
+    static COM_UNIT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Resets `MODULE_REF_COUNT` to `0` on drop while `COM_UNIT_TEST_LOCK` is
+    /// still held so an early `Err` return or unwinding assertion cannot leak
+    /// stale module references into the next serialized COM unit test.
+    struct ModuleRefCleanupGuard;
+    impl Drop for ModuleRefCleanupGuard {
+        fn drop(&mut self) {
+            MODULE_REF_COUNT.store(0, Ordering::Release);
+        }
+    }
+
     struct ThreadMuiRestore;
     impl Drop for ThreadMuiRestore {
         fn drop(&mut self) {
@@ -1282,6 +1312,11 @@ mod tests {
 
     #[test]
     fn com_factory_double_instantiation_error_contracts_and_10001_cap() -> TestResult {
+        let _guard = COM_UNIT_TEST_LOCK
+            .lock()
+            .map_err(|_| "COM_UNIT_TEST_LOCK poisoned")?;
+        let _cleanup = ModuleRefCleanupGuard;
+
         // Error contract checks on DllGetClassObject.
         // SAFETY: Explicit null-pointer contract checks.
         let hr_null_ppv = unsafe {
@@ -1466,6 +1501,333 @@ mod tests {
             let _ = (factory_vtbl.base.Release)(out);
         }
         assert_eq!(DllCanUnloadNow(), S_OK);
+        Ok(())
+    }
+
+    #[test]
+    fn tier5_com_lock_server_query_interface_overflow_immortality_and_mixed_virtual_items()
+    -> TestResult {
+        let _guard = COM_UNIT_TEST_LOCK
+            .lock()
+            .map_err(|_| "COM_UNIT_TEST_LOCK poisoned")?;
+        let _cleanup = ModuleRefCleanupGuard;
+
+        // 1. Direct saturating_add_ref / saturating_release_ref overflow & underflow guards.
+        let counter = AtomicU32::new(0);
+        assert_eq!(saturating_release_ref(&counter), (false, 0));
+        assert_eq!(counter.load(Ordering::Acquire), 0);
+
+        counter.store(u32::MAX, Ordering::Release);
+        assert_eq!(saturating_add_ref(&counter), u32::MAX);
+        assert_eq!(saturating_release_ref(&counter), (false, u32::MAX));
+        assert_eq!(counter.load(Ordering::Acquire), u32::MAX);
+
+        counter.store(2, Ordering::Release);
+        assert_eq!(saturating_release_ref(&counter), (false, 1));
+        assert_eq!(saturating_release_ref(&counter), (true, 0));
+        assert_eq!(saturating_release_ref(&counter), (false, 0));
+
+        // 2. Live factory & command: LockServer(TRUE/FALSE), QueryInterface, and u32::MAX release guard.
+        let mut factory_raw: *mut c_void = ptr::null_mut();
+        // SAFETY: Valid COM arguments for `DllGetClassObject`.
+        let hr = unsafe {
+            DllGetClassObject(
+                &CLSID_TOTALDROP_EXPLORER_COMMAND,
+                &IID_ICLASS_FACTORY,
+                &mut factory_raw,
+            )
+        };
+        assert_eq!(hr, S_OK);
+        assert!(!factory_raw.is_null());
+        // SAFETY: `factory_raw` is a live `TotalDropClassFactory`.
+        let f_vtbl = unsafe { &*(*factory_raw.cast::<*const IClassFactoryVtbl>()) };
+
+        // Direct QueryInterface on factory (IID_IUnknown, IID_ICLASS_FACTORY, bogus, null checks).
+        let bogus_iid = GUID::from_u128(0xDEAD_BEEF_CAFE_BABE_1234_5678_9ABC_DEF0);
+        let mut qi_out: *mut c_void = ptr::null_mut();
+        // SAFETY: Valid COM QueryInterface null out-pointer check.
+        let hr_f_null_ppv =
+            unsafe { (f_vtbl.base.QueryInterface)(factory_raw, &IID_IUnknown, ptr::null_mut()) };
+        assert_eq!(hr_f_null_ppv, E_POINTER);
+        // SAFETY: Null riid check.
+        let hr_f_null_riid =
+            unsafe { (f_vtbl.base.QueryInterface)(factory_raw, ptr::null(), &mut qi_out) };
+        assert_eq!(hr_f_null_riid, E_INVALIDARG);
+        // SAFETY: Unsupported IID check.
+        let hr_f_bogus =
+            unsafe { (f_vtbl.base.QueryInterface)(factory_raw, &bogus_iid, &mut qi_out) };
+        assert_eq!(hr_f_bogus, E_NOINTERFACE);
+        assert!(qi_out.is_null());
+        // SAFETY: QueryInterface for IID_IUnknown adds a reference.
+        let hr_f_unk =
+            unsafe { (f_vtbl.base.QueryInterface)(factory_raw, &IID_IUnknown, &mut qi_out) };
+        assert_eq!(hr_f_unk, S_OK);
+        assert_eq!(qi_out, factory_raw);
+        // SAFETY: Balance the QueryInterface reference.
+        let rem_f_unk = unsafe { (f_vtbl.base.Release)(qi_out) };
+        assert_eq!(rem_f_unk, 1);
+
+        // Create IExplorerCommand and verify direct QueryInterface.
+        let mut cmd_raw: *mut c_void = ptr::null_mut();
+        // SAFETY: Valid COM instantiation.
+        let hr_create = unsafe {
+            (f_vtbl.create_instance)(
+                factory_raw,
+                ptr::null_mut(),
+                &IID_IEXPLORER_COMMAND,
+                &mut cmd_raw,
+            )
+        };
+        assert_eq!(hr_create, S_OK);
+        assert!(!cmd_raw.is_null());
+        // SAFETY: `cmd_raw` is a live `TotalDropExplorerCommand`.
+        let c_vtbl = unsafe { &*(*cmd_raw.cast::<*const IExplorerCommandVtbl>()) };
+        let mut cmd_qi: *mut c_void = ptr::null_mut();
+        // SAFETY: Null out-pointer check.
+        let hr_c_null_ppv =
+            unsafe { (c_vtbl.base.QueryInterface)(cmd_raw, &IID_IUnknown, ptr::null_mut()) };
+        assert_eq!(hr_c_null_ppv, E_POINTER);
+        // SAFETY: Unsupported IID check.
+        let hr_c_bogus = unsafe { (c_vtbl.base.QueryInterface)(cmd_raw, &bogus_iid, &mut cmd_qi) };
+        assert_eq!(hr_c_bogus, E_NOINTERFACE);
+        assert!(cmd_qi.is_null());
+        // SAFETY: QueryInterface for IID_IUnknown adds a reference.
+        let hr_c_unk = unsafe { (c_vtbl.base.QueryInterface)(cmd_raw, &IID_IUnknown, &mut cmd_qi) };
+        assert_eq!(hr_c_unk, S_OK);
+        assert_eq!(cmd_qi, cmd_raw);
+        // SAFETY: Balance the QueryInterface reference.
+        let rem_c_unk = unsafe { (c_vtbl.base.Release)(cmd_qi) };
+        assert_eq!(rem_c_unk, 1);
+        // SAFETY: QueryInterface for IID_IEXPLORER_COMMAND adds a reference.
+        let hr_c_icmd =
+            unsafe { (c_vtbl.base.QueryInterface)(cmd_raw, &IID_IEXPLORER_COMMAND, &mut cmd_qi) };
+        assert_eq!(hr_c_icmd, S_OK);
+        assert_eq!(cmd_qi, cmd_raw);
+        // SAFETY: Balance the QueryInterface reference.
+        let rem_c_icmd = unsafe { (c_vtbl.base.Release)(cmd_qi) };
+        assert_eq!(rem_c_icmd, 1);
+
+        // Saturated u32::MAX refcount stays immortal on AddRef & Release for both factory & cmd.
+        // SAFETY: `cmd_raw` is a live `TotalDropExplorerCommand`.
+        unsafe {
+            (*cmd_raw.cast::<TotalDropExplorerCommand>())
+                .ref_count
+                .store(u32::MAX, Ordering::Release);
+        }
+        // SAFETY: Saturated AddRef must keep refcount at u32::MAX.
+        let sat_cmd_add = unsafe { (c_vtbl.base.AddRef)(cmd_raw) };
+        assert_eq!(sat_cmd_add, u32::MAX);
+        // SAFETY: Saturated Release must remain immortal at u32::MAX without dropping.
+        let sat_cmd_rel = unsafe { (c_vtbl.base.Release)(cmd_raw) };
+        assert_eq!(sat_cmd_rel, u32::MAX);
+        // SAFETY: Restore normal refcount of 1 so cleanup frees cleanly.
+        unsafe {
+            (*cmd_raw.cast::<TotalDropExplorerCommand>())
+                .ref_count
+                .store(1, Ordering::Release);
+        }
+
+        // SAFETY: `factory_raw` is a live `TotalDropClassFactory`.
+        unsafe {
+            (*factory_raw.cast::<TotalDropClassFactory>())
+                .ref_count
+                .store(u32::MAX, Ordering::Release);
+        }
+        // SAFETY: Saturated Release must remain immortal at u32::MAX.
+        let sat_f_rel = unsafe { (f_vtbl.base.Release)(factory_raw) };
+        assert_eq!(sat_f_rel, u32::MAX);
+        // SAFETY: Restore normal refcount of 1 so cleanup frees cleanly.
+        unsafe {
+            (*factory_raw.cast::<TotalDropClassFactory>())
+                .ref_count
+                .store(1, Ordering::Release);
+        }
+
+        // LockServer(TRUE) keeps DllCanUnloadNow() == S_FALSE even after releasing objects.
+        // SAFETY: Valid COM LockServer(TRUE).
+        let hr_lock = unsafe { (f_vtbl.lock_server)(factory_raw, 1) };
+        assert_eq!(hr_lock, S_OK);
+        // SAFETY: Release command while server lock is held.
+        let rem_cmd = unsafe { (c_vtbl.base.Release)(cmd_raw) };
+        assert_eq!(rem_cmd, 0);
+        // SAFETY: Release factory while server lock is held.
+        let rem_fac = unsafe { (f_vtbl.base.Release)(factory_raw) };
+        assert_eq!(rem_fac, 0);
+        assert_eq!(DllCanUnloadNow(), S_FALSE);
+
+        // Unlock server via a fresh lock_server(FALSE) call (stateless method ignores `this`).
+        // SAFETY: `factory_lock_server` ignores `_this` and decrements MODULE_REF_COUNT.
+        let hr_unlock = unsafe { factory_lock_server(ptr::null_mut(), 0) };
+        assert_eq!(hr_unlock, S_OK);
+        assert_eq!(DllCanUnloadNow(), S_OK);
+
+        // 3. Mixed valid + virtual (GetDisplayName failing) IShellItemArray items.
+        #[repr(C)]
+        struct MixedShellItem {
+            _vtbl: *const IShellItemVtbl,
+            ref_count: AtomicU32,
+            path: Option<String>,
+        }
+
+        static MIXED_ITEM_VTBL: IShellItemVtbl = IShellItemVtbl {
+            base: IUnknown_Vtbl {
+                QueryInterface: mock_qi,
+                AddRef: mixed_item_addref,
+                Release: mixed_item_release,
+            },
+            bind_to_handler: mock_bind_to_handler,
+            get_parent: mixed_item_parent,
+            get_display_name: mixed_item_display_name,
+            get_attributes: mixed_item_attrs,
+            compare: mixed_item_compare,
+        };
+
+        unsafe extern "system" fn mixed_item_addref(this: *mut c_void) -> u32 {
+            // SAFETY: `this` is a heap-allocated `MixedShellItem`.
+            let item = unsafe { &*this.cast::<MixedShellItem>() };
+            saturating_add_ref(&item.ref_count)
+        }
+
+        unsafe extern "system" fn mixed_item_release(this: *mut c_void) -> u32 {
+            // SAFETY: `this` is a heap-allocated `MixedShellItem`.
+            let ptr_typed = this.cast::<MixedShellItem>();
+            // SAFETY: `ptr_typed` is a live `MixedShellItem`.
+            let ref_count = unsafe { &(*ptr_typed).ref_count };
+            let (should_drop, rem) = saturating_release_ref(ref_count);
+            if should_drop {
+                // SAFETY: Final reference reached zero; free `MixedShellItem`.
+                let _ = unsafe { Box::from_raw(ptr_typed) };
+            }
+            rem
+        }
+
+        unsafe extern "system" fn mixed_item_parent(
+            _this: *mut c_void,
+            _ppsi: *mut *mut IShellItem,
+        ) -> HRESULT {
+            E_NOTIMPL
+        }
+
+        unsafe extern "system" fn mixed_item_display_name(
+            this: *mut c_void,
+            sigdn: i32,
+            ppsz_name: *mut PWSTR,
+        ) -> HRESULT {
+            if ppsz_name.is_null() {
+                return E_POINTER;
+            }
+            // SAFETY: `ppsz_name` is a valid writable out-pointer.
+            unsafe { *ppsz_name = ptr::null_mut() };
+            if sigdn != SIGDN_FILESYSPATH || this.is_null() {
+                return E_INVALIDARG;
+            }
+            // SAFETY: `this` is a live `MixedShellItem`.
+            let item = unsafe { &*this.cast::<MixedShellItem>() };
+            match &item.path {
+                Some(path) => match alloc_co_task_mem_wstr(path) {
+                    Ok(wstr) => {
+                        // SAFETY: `ppsz_name` is valid writable out-pointer.
+                        unsafe { *ppsz_name = wstr };
+                        S_OK
+                    }
+                    Err(hr) => hr,
+                },
+                None => E_FAIL,
+            }
+        }
+
+        unsafe extern "system" fn mixed_item_attrs(
+            _this: *mut c_void,
+            _mask: u32,
+            _out: *mut u32,
+        ) -> HRESULT {
+            E_NOTIMPL
+        }
+
+        unsafe extern "system" fn mixed_item_compare(
+            _this: *mut c_void,
+            _psi: *mut IShellItem,
+            _hint: u32,
+            _out: *mut i32,
+        ) -> HRESULT {
+            E_NOTIMPL
+        }
+
+        #[repr(C)]
+        struct MixedShellArray {
+            _vtbl: *const IShellItemArrayVtbl,
+            entries: Vec<Option<String>>,
+        }
+
+        static MIXED_ARRAY_VTBL: IShellItemArrayVtbl = IShellItemArrayVtbl {
+            base: IUnknown_Vtbl {
+                QueryInterface: mock_qi,
+                AddRef: mock_addref,
+                Release: mock_release,
+            },
+            bind_to_handler: mock_bind_to_handler,
+            get_property_store: mock_get_property_store,
+            get_property_description_list: mock_get_property_description_list,
+            get_attributes: mock_get_attributes,
+            get_count: mixed_array_get_count,
+            get_item_at: mixed_array_get_item_at,
+            enum_items: mock_enum_items,
+        };
+
+        unsafe extern "system" fn mixed_array_get_count(
+            this: *mut c_void,
+            pdw: *mut u32,
+        ) -> HRESULT {
+            if this.is_null() || pdw.is_null() {
+                return E_POINTER;
+            }
+            // SAFETY: `this` is a valid `MixedShellArray`.
+            let arr = unsafe { &*this.cast::<MixedShellArray>() };
+            // SAFETY: `pdw` is a valid out-pointer.
+            unsafe { *pdw = u32::try_from(arr.entries.len()).unwrap_or(u32::MAX) };
+            S_OK
+        }
+
+        unsafe extern "system" fn mixed_array_get_item_at(
+            this: *mut c_void,
+            idx: u32,
+            ppsi: *mut *mut IShellItem,
+        ) -> HRESULT {
+            if this.is_null() || ppsi.is_null() {
+                return E_POINTER;
+            }
+            // SAFETY: `this` is a valid `MixedShellArray`.
+            let arr = unsafe { &*this.cast::<MixedShellArray>() };
+            let Some(entry) = arr.entries.get(idx as usize) else {
+                return E_INVALIDARG;
+            };
+            let boxed = Box::new(MixedShellItem {
+                _vtbl: &MIXED_ITEM_VTBL,
+                ref_count: AtomicU32::new(1),
+                path: entry.clone(),
+            });
+            // SAFETY: Caller receives an owned `IShellItem` reference.
+            unsafe { *ppsi = Box::into_raw(boxed).cast::<IShellItem>() };
+            S_OK
+        }
+
+        let mut mixed = MixedShellArray {
+            _vtbl: &MIXED_ARRAY_VTBL,
+            entries: vec![
+                Some(r"C:\Users\Alice\first.txt".to_owned()),
+                None, // virtual shell item (GetDisplayName returns E_FAIL)
+                Some(r"C:\Users\Alice\second.txt".to_owned()),
+            ],
+        };
+        let collected = collect_shell_item_paths(ptr::from_mut(&mut mixed).cast(), 3)
+            .map_err(|hr| format!("collect_shell_item_paths failed: 0x{:08x}", hr as u32))?;
+        assert_eq!(
+            collected,
+            vec![
+                r"C:\Users\Alice\first.txt".to_owned(),
+                r"C:\Users\Alice\second.txt".to_owned(),
+            ]
+        );
         Ok(())
     }
 

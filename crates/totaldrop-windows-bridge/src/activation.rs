@@ -583,8 +583,65 @@ fn build_unc_paths(unc_rest: &str) -> Result<(WindowsRootKind, String, String), 
     Ok((WindowsRootKind::Unc, extended, display))
 }
 
+const TOO_MANY_ITEMS_DESER_SENTINEL: &str = "__totaldrop_too_many_selection_items__";
+
+/// Streaming bounded sequence deserializer for [`WindowsSelectionPath`] lists.
+///
+/// Aborts immediately upon seeing item `MAX_SELECTION_ITEMS + 1` without
+/// parsing or allocating the remaining array elements so a `< 4 MiB` Named
+/// Pipe IPC frame containing hundreds of thousands of short paths cannot stall
+/// the router.
+fn deserialize_bounded_paths<'de, D>(deserializer: D) -> Result<Vec<WindowsSelectionPath>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct BoundedPathsVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for BoundedPathsVisitor {
+        type Value = Vec<WindowsSelectionPath>;
+
+        fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(
+                formatter,
+                "a sequence of at most {MAX_SELECTION_ITEMS} Windows paths"
+            )
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let initial_cap = seq.size_hint().unwrap_or(0).min(MAX_SELECTION_ITEMS);
+            let mut paths = Vec::with_capacity(initial_cap);
+            while paths.len() < MAX_SELECTION_ITEMS {
+                let Some(item) = seq.next_element::<WindowsSelectionPath>()? else {
+                    return Ok(paths);
+                };
+                paths.push(item);
+            }
+            if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom(TOO_MANY_ITEMS_DESER_SENTINEL));
+            }
+            Ok(paths)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedPathsVisitor)
+}
+
+struct BoundedPaths(Vec<WindowsSelectionPath>);
+
+impl<'de> Deserialize<'de> for BoundedPaths {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_bounded_paths(deserializer).map(Self)
+    }
+}
+
 /// Payload carried inside an [`ActivationEnvelope`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivationPayload {
     /// Files and/or folders invoked from Windows 11 File Explorer's right-click
@@ -614,6 +671,100 @@ pub enum ActivationPayload {
         /// Target WinUI 3 page.
         screen: ScreenTarget,
     },
+}
+
+impl<'de> Deserialize<'de> for ActivationPayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const VARIANTS: &[&str] = &[
+            "explorer_send",
+            "protocol_uri",
+            "share_target",
+            "open_screen",
+        ];
+
+        struct PayloadVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for PayloadVisitor {
+            type Value = ActivationPayload;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                formatter.write_str("an ActivationPayload object tagged with 'kind'")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut kind: Option<String> = None;
+                let mut paths: Option<Vec<WindowsSelectionPath>> = None;
+                let mut code: Option<ValidatedCode> = None;
+                let mut text: Option<Option<String>> = None;
+                let mut screen: Option<ScreenTarget> = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "kind" => {
+                            if kind.is_some() {
+                                return Err(serde::de::Error::duplicate_field("kind"));
+                            }
+                            kind = Some(map.next_value()?);
+                        }
+                        "paths" => {
+                            if paths.is_some() {
+                                return Err(serde::de::Error::duplicate_field("paths"));
+                            }
+                            let bounded: BoundedPaths = map.next_value()?;
+                            paths = Some(bounded.0);
+                        }
+                        "code" => {
+                            if code.is_some() {
+                                return Err(serde::de::Error::duplicate_field("code"));
+                            }
+                            code = Some(map.next_value()?);
+                        }
+                        "text" => {
+                            if text.is_some() {
+                                return Err(serde::de::Error::duplicate_field("text"));
+                            }
+                            text = Some(map.next_value()?);
+                        }
+                        "screen" => {
+                            if screen.is_some() {
+                                return Err(serde::de::Error::duplicate_field("screen"));
+                            }
+                            screen = Some(map.next_value()?);
+                        }
+                        _ => {
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                let kind = kind.ok_or_else(|| serde::de::Error::missing_field("kind"))?;
+                match kind.as_str() {
+                    "explorer_send" => Ok(ActivationPayload::ExplorerSend {
+                        paths: paths.ok_or_else(|| serde::de::Error::missing_field("paths"))?,
+                    }),
+                    "protocol_uri" => Ok(ActivationPayload::ProtocolUri {
+                        code: code.ok_or_else(|| serde::de::Error::missing_field("code"))?,
+                    }),
+                    "share_target" => Ok(ActivationPayload::ShareTarget {
+                        paths: paths.ok_or_else(|| serde::de::Error::missing_field("paths"))?,
+                        text: text.flatten(),
+                    }),
+                    "open_screen" => Ok(ActivationPayload::OpenScreen {
+                        screen: screen.ok_or_else(|| serde::de::Error::missing_field("screen"))?,
+                    }),
+                    other => Err(serde::de::Error::unknown_variant(other, VARIANTS)),
+                }
+            }
+        }
+
+        deserializer.deserialize_map(PayloadVisitor)
+    }
 }
 
 /// Versioned activation envelope exchanged between `totaldrop_explorer_ext.dll`
@@ -649,10 +800,10 @@ impl ActivationEnvelope {
     {
         let mut seen = HashSet::new();
         let mut paths = Vec::new();
-        for raw in raw_paths {
-            if paths.len() >= MAX_SELECTION_ITEMS {
+        for (idx, raw) in raw_paths.into_iter().enumerate() {
+            if idx >= MAX_SELECTION_ITEMS {
                 return Err(ActivationError::TooManyItems {
-                    count: paths.len().saturating_add(1),
+                    count: idx.saturating_add(1),
                 });
             }
             let validated = WindowsSelectionPath::parse(raw.as_ref())?;
@@ -702,10 +853,10 @@ impl ActivationEnvelope {
     {
         let mut seen = HashSet::new();
         let mut paths = Vec::new();
-        for raw in raw_paths {
-            if paths.len() >= MAX_SELECTION_ITEMS {
+        for (idx, raw) in raw_paths.into_iter().enumerate() {
+            if idx >= MAX_SELECTION_ITEMS {
                 return Err(ActivationError::TooManyItems {
-                    count: paths.len().saturating_add(1),
+                    count: idx.saturating_add(1),
                 });
             }
             let validated = WindowsSelectionPath::parse(raw.as_ref())?;
@@ -763,8 +914,16 @@ impl ActivationEnvelope {
                 byte_len: bytes.len(),
             });
         }
-        let envelope: Self = serde_json::from_slice(bytes)
-            .map_err(|e| ActivationError::InvalidJson(e.to_string()))?;
+        let envelope: Self = serde_json::from_slice(bytes).map_err(|e| {
+            let msg = e.to_string();
+            if msg.starts_with(TOO_MANY_ITEMS_DESER_SENTINEL) {
+                ActivationError::TooManyItems {
+                    count: MAX_SELECTION_ITEMS.saturating_add(1),
+                }
+            } else {
+                ActivationError::InvalidJson(msg)
+            }
+        })?;
         envelope.validate_invariants()?;
         Ok(envelope)
     }
@@ -1122,9 +1281,7 @@ where
     }
 
     if let [single] = raw_items.as_slice()
-        && (single.starts_with("totaldrop:")
-            || single.starts_with("https://")
-            || single.starts_with("http://"))
+        && crate::uri::looks_like_activation_uri(single)
     {
         return ActivationEnvelope::protocol_uri(single, None).map(Some);
     }
@@ -1138,4 +1295,126 @@ where
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+
+    #[test]
+    fn tier5_duplicate_paths_cannot_bypass_max_selection_items_cap() {
+        let exact_dups = vec![r"C:\dup\file.txt"; MAX_SELECTION_ITEMS];
+        let ok_exp = ActivationEnvelope::explorer_send(&exact_dups, Some(1));
+        assert!(ok_exp.is_ok(), "10,000 duplicate paths must succeed");
+        let ok_share = ActivationEnvelope::share_target(&exact_dups, None, Some(1));
+        assert!(
+            ok_share.is_ok(),
+            "10,000 duplicate share paths must succeed"
+        );
+
+        let over_dups = vec![r"C:\dup\file.txt"; MAX_SELECTION_ITEMS.saturating_add(1)];
+        assert_eq!(
+            ActivationEnvelope::explorer_send(&over_dups, Some(1)),
+            Err(ActivationError::TooManyItems {
+                count: MAX_SELECTION_ITEMS.saturating_add(1),
+            })
+        );
+        assert_eq!(
+            ActivationEnvelope::share_target(&over_dups, None, Some(1)),
+            Err(ActivationError::TooManyItems {
+                count: MAX_SELECTION_ITEMS.saturating_add(1),
+            })
+        );
+    }
+
+    #[test]
+    fn tier5_from_json_bytes_aborts_bounded_on_400k_path_ipc_frame() {
+        // Construct a valid < 4 MiB JSON envelope containing 400,000 short paths.
+        let count = 400_000usize;
+        let mut body = String::with_capacity(count * 8 + 128);
+        body.push_str(
+            r#"{"version":1,"initiator_pid":7,"payload":{"kind":"explorer_send","paths":["#,
+        );
+        for idx in 0..count {
+            if idx > 0 {
+                body.push(',');
+            }
+            body.push_str(r#""C:\\a""#);
+        }
+        body.push_str("]}}");
+        assert!(
+            body.len() < MAX_ENVELOPE_BYTES,
+            "fixture must remain under 4 MiB wire frame ceiling"
+        );
+
+        let started = Instant::now();
+        let err = ActivationEnvelope::from_json_bytes(body.as_bytes());
+        let elapsed = started.elapsed();
+        assert_eq!(
+            err,
+            Err(ActivationError::TooManyItems {
+                count: MAX_SELECTION_ITEMS.saturating_add(1),
+            })
+        );
+        assert!(
+            elapsed.as_secs() < 1,
+            "bounded deserializer must abort at item 10,001 well under 1s (took {elapsed:?})"
+        );
+
+        // Also verify paths appearing BEFORE `kind` in ShareTarget aborts bounded.
+        let mut share_first = String::with_capacity(count * 8 + 128);
+        share_first.push_str(r#"{"version":1,"initiator_pid":null,"payload":{"paths":["#);
+        for idx in 0..count {
+            if idx > 0 {
+                share_first.push(',');
+            }
+            share_first.push_str(r#""C:\\a""#);
+        }
+        share_first.push_str(r#"],"kind":"share_target","text":null}}"#);
+        assert_eq!(
+            ActivationEnvelope::from_json_bytes(share_first.as_bytes()),
+            Err(ActivationError::TooManyItems {
+                count: MAX_SELECTION_ITEMS.saturating_add(1),
+            })
+        );
+
+        // Sentinel text placed in `kind` must NOT spoof TooManyItems.
+        let spoof = format!(
+            r#"{{"version":1,"initiator_pid":null,"payload":{{"kind":"{TOO_MANY_ITEMS_DESER_SENTINEL}"}}}}"#
+        );
+        assert!(matches!(
+            ActivationEnvelope::from_json_bytes(spoof.as_bytes()),
+            Err(ActivationError::InvalidJson(_))
+        ));
+    }
+
+    #[test]
+    fn tier5_parse_launch_args_handles_uppercase_and_bidi_wrapped_uris()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for raw in [
+            "TOTALDROP://r/7-harbor-rocket",
+            "HTTP://TOTALDROP.APP/r#7-harbor-rocket",
+            "HTTPS://TOTALDROP.APP/r#7-harbor-rocket",
+            "\u{2068}totaldrop://r/7-harbor-rocket\u{2069}",
+            "\u{2068}TOTALDROP://r/7-harbor-rocket\u{2069}",
+        ] {
+            let env = parse_launch_args([raw])?;
+            match env {
+                Some(ActivationEnvelope {
+                    payload: ActivationPayload::ProtocolUri { code },
+                    ..
+                }) => {
+                    assert_eq!(code.display_english, "7-harbor-rocket");
+                }
+                other => {
+                    return Err(
+                        format!("unexpected parse_launch_args({raw:?}) => {other:?}").into(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 }

@@ -655,7 +655,8 @@ async fn run_fault_sender(
             *last ^= 0x01;
         }
         write_frame(&mut chan.send, &ct).await?;
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _ = tokio::time::timeout(Duration::from_secs(20), conn.closed()).await;
+        drop(endpoint);
         return Ok(());
     }
 

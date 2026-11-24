@@ -1,0 +1,30 @@
+<!-- SPDX-FileCopyrightText: 2026 The TotalDrop Contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\AssemblyInfo.cs" Link="App\AssemblyInfo.cs" />
+    <Compile Include="..\Interop\NativeBridge.cs" Link="App\Interop\NativeBridge.cs" />
+    <Compile Include="..\Services\SettingsStore.cs" Link="App\Services\SettingsStore.cs" />
+    <Compile Include="..\Services\NotificationPlanner.cs" Link="App\Services\NotificationPlanner.cs" />
+    <Compile Include="..\Services\WakeLockService.cs" Link="App\Services\WakeLockService.cs" />
+    <Compile Include="..\Services\ShareTargetRouter.cs" Link="App\Services\ShareTargetRouter.cs" />
+    <Compile Include="..\Services\WindowActivationCoordinator.cs" Link="App\Services\WindowActivationCoordinator.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.1" />
+  </ItemGroup>
+</Project>

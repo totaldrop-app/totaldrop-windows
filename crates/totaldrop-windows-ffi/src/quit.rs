@@ -56,20 +56,26 @@ impl Tasks {
 
     /// Spawns `work` on `runtime`, counting it from invocation until it
     /// finishes, is aborted, or panics.
+    ///
+    /// Acquires `self.handles` **before** incrementing `running` and spawning
+    /// so [`Self::abort_all`] can never observe a non-zero `running` count
+    /// without also seeing the spawned task's [`AbortHandle`].
     pub(crate) fn spawn(
         &'static self,
         runtime: &tokio::runtime::Runtime,
         work: impl Future<Output = ()> + Send + 'static,
     ) {
+        let mut handles = self
+            .handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let running = Running::new(self);
         let task = runtime.spawn(async move {
             let _running = running;
             work.await;
         });
-        if let Ok(mut handles) = self.handles.lock() {
-            handles.retain(|h| !h.is_finished());
-            handles.push(task.abort_handle());
-        }
+        handles.retain(|h| !h.is_finished());
+        handles.push(task.abort_handle());
     }
 
     /// Resolves once no counted task is running (immediately if already idle).
@@ -85,12 +91,14 @@ impl Tasks {
 
     /// Aborts every still-running tracked task.
     fn abort_all(&self) {
-        if let Ok(mut handles) = self.handles.lock() {
-            for handle in handles.iter() {
-                handle.abort();
-            }
-            handles.retain(|h| !h.is_finished());
+        let mut handles = self
+            .handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for handle in handles.iter() {
+            handle.abort();
         }
+        handles.retain(|h| !h.is_finished());
     }
 }
 
@@ -204,6 +212,71 @@ mod tests {
         assert!(!ended);
         assert!(seen_dropped.load(Ordering::SeqCst));
         assert!(started.elapsed() < Duration::from_secs(1));
+        Ok(())
+    }
+
+    #[test]
+    fn tier5_spawn_vs_abort_all_never_leaks_running_tasks() -> Result<(), std::io::Error> {
+        use std::sync::Barrier;
+
+        static TASKS: Tasks = Tasks::new();
+        let rt = Arc::new(test_runtime()?);
+
+        for _round in 0..40 {
+            let start_barrier = Arc::new(Barrier::new(5));
+            let mut spawners = Vec::new();
+            for _ in 0..4 {
+                let rt_clone = Arc::clone(&rt);
+                let b = Arc::clone(&start_barrier);
+                spawners.push(std::thread::spawn(move || {
+                    b.wait();
+                    for _ in 0..8 {
+                        TASKS.spawn(&rt_clone, async {
+                            std::future::pending::<()>().await;
+                        });
+                    }
+                }));
+            }
+
+            start_barrier.wait();
+            // Exercise repeated abort_all while spawns are concurrently registering.
+            for _ in 0..8 {
+                TASKS.abort_all();
+                std::thread::yield_now();
+            }
+
+            for t in spawners {
+                assert!(t.join().is_ok());
+            }
+
+            // Every spawned task is now registered under `handles`, so a single
+            // `finish` with short stopping window MUST abort every straggler
+            // quickly without burning the 200 ms ABORTED fallback and leave
+            // running == 0.
+            let started = Instant::now();
+            let _ = rt.block_on(finish(&TASKS, async {}, Duration::from_millis(5)));
+            assert_eq!(
+                TASKS.running.load(Ordering::Acquire),
+                0,
+                "leaked running task escaped abort_all"
+            );
+            assert!(
+                started.elapsed() < Duration::from_millis(180),
+                "finish burned ABORTED timeout (took {:?})",
+                started.elapsed()
+            );
+        }
+
+        // Verify post-shutdown reuse works cleanly without wedging.
+        let completed = Arc::new(AtomicBool::new(false));
+        let done_flag = Arc::clone(&completed);
+        TASKS.spawn(&rt, async move {
+            done_flag.store(true, Ordering::SeqCst);
+        });
+        let ended = rt.block_on(finish(&TASKS, async {}, Duration::from_secs(1)));
+        assert!(ended);
+        assert!(completed.load(Ordering::SeqCst));
+        assert_eq!(TASKS.running.load(Ordering::Acquire), 0);
         Ok(())
     }
 }

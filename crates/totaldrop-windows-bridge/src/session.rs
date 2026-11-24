@@ -71,16 +71,20 @@ impl BridgeNetworkConfig {
     /// Checks that user-configured rendezvous and relay URLs are accepted by
     /// [`totaldrop_core::relay::check_url`] (`wss://` with a non-empty host, or
     /// `ws://` strictly on localhost / `127.0.0.1` / `[::1]`, rejecting control
-    /// characters and `@` userinfo) and carry a strictly well-formed authority
-    /// (non-empty host or valid bracketed IPv6 literal, optional port in
-    /// `1..=65535`, and no `#` fragment per RFC 6455 §3).
+    /// characters, non-ASCII / Bidi format characters, and `@` userinfo) and
+    /// carry a strictly well-formed authority (non-empty host or valid
+    /// bracketed IPv6 literal, optional port in `1..=65535`, and no `#`
+    /// fragment per RFC 6455 §3).
     #[must_use]
     pub fn is_valid_rendezvous_url(url: &str) -> bool {
-        if url.chars().any(char::is_control) {
+        if !url.is_ascii() || url.bytes().any(|b| b < 0x20 || b == 0x7F) {
             return false;
         }
-        let trimmed = url.trim();
-        if trimmed.is_empty() || totaldrop_core::relay::check_url(trimmed).is_err() {
+        let trimmed = url.trim_matches(' ');
+        if trimmed.is_empty()
+            || trimmed.bytes().any(|b| !(0x21..=0x7E).contains(&b))
+            || totaldrop_core::relay::check_url(trimmed).is_err()
+        {
             return false;
         }
         if trimmed.contains('#') {
@@ -643,5 +647,52 @@ mod tests {
                 .chars()
                 .any(totaldrop_l10n::is_hidden)
         );
+    }
+
+    #[test]
+    fn tier5_is_valid_rendezvous_url_rejects_bidi_non_ascii_and_control_chars() {
+        let valid = [
+            "wss://example.test",
+            "wss://example.test:443/v0/relay",
+            "  wss://example.test/v0  ",
+            "ws://127.0.0.1:4400",
+            "ws://localhost:4400/ws",
+            "ws://[::1]:4400",
+        ];
+        for url in valid {
+            assert!(
+                BridgeNetworkConfig::is_valid_rendezvous_url(url),
+                "valid URL unexpectedly rejected: {url:?}"
+            );
+        }
+
+        let hostile = [
+            "wss://example.test/\u{202E}evil",
+            "wss://example.test/\u{2066}spoof",
+            "wss://example.test/\u{2067}spoof",
+            "wss://example.test/\u{2068}spoof",
+            "wss://example.test/\u{2069}spoof",
+            "wss://example.test/\u{2028}line",
+            "wss://example.test/\u{2029}para",
+            "wss://example.test/\u{FDD0}nonchar",
+            "wss://example.test/\u{FDEF}nonchar",
+            "wss://example.test/\u{FFFF}nonchar",
+            "wss://example.test/\u{E0041}tag",
+            "wss://example.test\u{00A0}",
+            "wss://example.test/a\u{00A0}b",
+            "\u{00A0}wss://example.test",
+            "wss://example.test/a b",
+            "wss://example.test\t",
+            "wss://example.test\r\n",
+            "wss://example.test/\0",
+            "wss://example.test/\u{007F}",
+            "wss://example.test/caf\u{00E9}",
+        ];
+        for url in hostile {
+            assert!(
+                !BridgeNetworkConfig::is_valid_rendezvous_url(url),
+                "hostile URL must be rejected: {url:?}"
+            );
+        }
     }
 }

@@ -177,13 +177,12 @@ impl ValidatedCode {
                 limit: MAX_LINK_BYTES,
             });
         }
-        if totaldrop_proto::strip_invisible_format(uri)
-            .trim()
-            .is_empty()
-        {
+        let normalized = normalize_activation_prefix(uri);
+        if normalized.is_empty() {
             return Err(UriValidationError::Empty);
         }
-        let code = TransferCode::from_link(uri).ok_or(UriValidationError::InvalidActivationLink)?;
+        let code = TransferCode::from_link(&normalized)
+            .ok_or(UriValidationError::InvalidActivationLink)?;
         Ok(Self::from_proto(&code))
     }
 
@@ -200,25 +199,22 @@ impl ValidatedCode {
     /// Returns [`UriValidationError`] describing why the typed code is not
     /// valid.
     pub fn from_user_input(input: &str) -> Result<Self, UriValidationError> {
+        let normalized = normalize_activation_prefix(input);
         if input.len() <= MAX_LINK_BYTES
-            && let Some(code) = TransferCode::from_link(input)
+            && !normalized.is_empty()
+            && let Some(code) = TransferCode::from_link(&normalized)
         {
             return Ok(Self::from_proto(&code));
         }
-        let stripped = totaldrop_proto::strip_invisible_format(input);
-        let trimmed = stripped.trim();
-        if trimmed.is_empty() {
+        if normalized.is_empty() {
             return Err(UriValidationError::Empty);
         }
         // If the person pasted a link with a recognized scheme, reject it as a
         // bad link rather than reporting "the code must start with a number".
-        if trimmed.starts_with("totaldrop:")
-            || trimmed.starts_with("https://")
-            || trimmed.starts_with("http://")
-        {
+        if has_activation_scheme_prefix(&normalized) {
             return Err(UriValidationError::InvalidActivationLink);
         }
-        let code = TransferCode::parse(trimmed)?;
+        let code = TransferCode::parse(&normalized)?;
         Ok(Self::from_proto(&code))
     }
 
@@ -238,20 +234,24 @@ impl ValidatedCode {
         if trimmed.is_empty() {
             return Err(UriValidationError::Empty);
         }
-        if trimmed.len() <= MAX_LINK_BYTES
-            && let Some(code) = TransferCode::from_link(trimmed)
-        {
-            return Ok(Self::from_proto(&code));
+        if trimmed.len() <= MAX_LINK_BYTES {
+            let normalized = normalize_activation_prefix(trimmed);
+            if !normalized.is_empty()
+                && let Some(code) = TransferCode::from_link(&normalized)
+            {
+                return Ok(Self::from_proto(&code));
+            }
         }
         // Scan whitespace-delimited tokens for a standalone TotalDrop link inside
         // a longer message before falling back to `TransferCode::find`.
         for token in trimmed.split_whitespace() {
             let clean =
                 token.trim_matches(|c: char| matches!(c, '(' | ')' | '<' | '>' | '"' | '.'));
-            if (clean.starts_with("https://totaldrop.app/r#")
-                || clean.starts_with("http://totaldrop.app/r#")
-                || clean.starts_with("totaldrop://r/"))
-                && let Some(code) = TransferCode::from_link(clean)
+            let normalized = normalize_activation_prefix(clean);
+            if (normalized.starts_with("https://totaldrop.app/r#")
+                || normalized.starts_with("http://totaldrop.app/r#")
+                || normalized.starts_with("totaldrop://r/"))
+                && let Some(code) = TransferCode::from_link(&normalized)
             {
                 return Ok(Self::from_proto(&code));
             }
@@ -287,4 +287,127 @@ pub fn code_word_completions(prefix: &str, limit: usize) -> Vec<&'static str> {
         .filter(|word| word.starts_with(&normalized))
         .take(limit)
         .collect()
+}
+
+fn starts_with_ascii_ignore_case(text: &str, prefix: &str) -> bool {
+    text.get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn has_activation_scheme_prefix(trimmed: &str) -> bool {
+    starts_with_ascii_ignore_case(trimmed, "totaldrop:")
+        || starts_with_ascii_ignore_case(trimmed, "https://")
+        || starts_with_ascii_ignore_case(trimmed, "http://")
+}
+
+/// Returns `true` when `raw` starts with a recognized activation URI scheme
+/// (`totaldrop:`, `https://`, or `http://`, ASCII case-insensitive) after
+/// stripping invisible Unicode format characters and outer whitespace.
+pub(crate) fn looks_like_activation_uri(raw: &str) -> bool {
+    let stripped = totaldrop_proto::strip_invisible_format(raw);
+    has_activation_scheme_prefix(stripped.trim())
+}
+
+/// Strips invisible Unicode format characters and outer whitespace, then
+/// normalizes the ASCII casing of known TotalDrop URI scheme/host prefixes
+/// (`totaldrop://r/`, `totaldrop:`, `https://totaldrop.app/r#`,
+/// `http://totaldrop.app/r#`) before delegating to `TransferCode::from_link`.
+fn normalize_activation_prefix(raw: &str) -> String {
+    let stripped = totaldrop_proto::strip_invisible_format(raw);
+    let trimmed = stripped.trim();
+
+    if let Some(rest) = strip_ascii_prefix_ignore_case(trimmed, "https://totaldrop.app")
+        && let Some(after_r) = rest.strip_prefix("/r#")
+    {
+        return format!("https://totaldrop.app/r#{after_r}");
+    }
+    if let Some(rest) = strip_ascii_prefix_ignore_case(trimmed, "http://totaldrop.app")
+        && let Some(after_r) = rest.strip_prefix("/r#")
+    {
+        return format!("http://totaldrop.app/r#{after_r}");
+    }
+    if let Some(rest) = strip_ascii_prefix_ignore_case(trimmed, "totaldrop://r/") {
+        return format!("totaldrop://r/{rest}");
+    }
+    if let Some(rest) = strip_ascii_prefix_ignore_case(trimmed, "totaldrop:") {
+        return format!("totaldrop:{rest}");
+    }
+
+    trimmed.to_owned()
+}
+
+fn strip_ascii_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    if head.eq_ignore_ascii_case(prefix) {
+        text.get(prefix.len()..)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tier5_activation_uri_normalizes_ascii_scheme_and_host_casing() {
+        let valid_cases = [
+            "TOTALDROP://r/7-harbor-rocket",
+            "TOTALDROP://R/7-harbor-rocket",
+            "TotalDrop:7-harbor-rocket",
+            "HTTPS://TOTALDROP.APP/r#7-harbor-rocket",
+            "HTTP://TOTALDROP.APP/r#7-harbor-rocket",
+            "\u{2068}TOTALDROP://r/7-harbor-rocket\u{2069}",
+            "  \u{2068}HTTP://TotalDrop.App/r#7-harbor-rocket\u{2069}  ",
+        ];
+        for raw in valid_cases {
+            let from_uri = ValidatedCode::from_activation_uri(raw);
+            assert!(
+                from_uri.is_ok(),
+                "from_activation_uri rejected valid cased URI {raw:?}: {from_uri:?}"
+            );
+            assert_eq!(
+                from_uri.as_ref().map(|c| c.display_english.as_str()),
+                Ok("7-harbor-rocket")
+            );
+
+            let from_user = ValidatedCode::from_user_input(raw);
+            assert!(
+                from_user.is_ok(),
+                "from_user_input rejected valid cased URI {raw:?}: {from_user:?}"
+            );
+            assert_eq!(
+                from_user.as_ref().map(|c| c.display_english.as_str()),
+                Ok("7-harbor-rocket")
+            );
+        }
+
+        // Uppercase scheme with invalid payload must report InvalidActivationLink (not BadNameplate).
+        assert_eq!(
+            ValidatedCode::from_user_input("TOTALDROP://r/not-valid"),
+            Err(UriValidationError::InvalidActivationLink)
+        );
+        assert_eq!(
+            ValidatedCode::from_activation_uri("TOTALDROP://r/not-valid"),
+            Err(UriValidationError::InvalidActivationLink)
+        );
+        // Untrusted host or wrong case path `/R#` remains rejected.
+        assert_eq!(
+            ValidatedCode::from_activation_uri("HTTPS://EVIL.EXAMPLE/r#7-harbor-rocket"),
+            Err(UriValidationError::InvalidActivationLink)
+        );
+        assert_eq!(
+            ValidatedCode::from_activation_uri("HTTPS://TOTALDROP.APP/R#7-harbor-rocket"),
+            Err(UriValidationError::InvalidActivationLink)
+        );
+
+        // Clipboard extraction also handles uppercase scheme/host links.
+        let clip = ValidatedCode::from_clipboard_text(
+            "Download via HTTP://TOTALDROP.APP/r#7-harbor-rocket now.",
+        );
+        assert_eq!(
+            clip.as_ref().map(|c| c.display_english.as_str()),
+            Ok("7-harbor-rocket")
+        );
+    }
 }

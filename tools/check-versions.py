@@ -1024,30 +1024,42 @@ def check_manifests_and_scripts(repo_root: Path, errors: list[str]) -> None:
     ):
         text = (repo_root / rel).read_text(encoding="utf-8")
         if not re.search(
-            r"^#\s*yaml-language-server:\s*\$schema=https://aka\.ms/winget-manifest\.singleton\.1\.9\.0\.schema\.json\s*$",
+            r"^#[ \t]*yaml-language-server:[ \t]*\$schema=https://aka\.ms/winget-manifest\.singleton\.1\.9\.0\.schema\.json[ \t]*$",
             text,
             re.MULTILINE,
         ):
             errors.append(
                 f"{rel}: missing https://aka.ms/winget-manifest.singleton.1.9.0.schema.json schema header"
             )
-        m_mver = re.search(r"^ManifestVersion:\s*(\S+)\s*$", text, re.MULTILINE)
-        expect_eq(
-            errors,
-            f"{rel} ManifestVersion",
-            m_mver.group(1) if m_mver else None,
-            "1.9.0",
-        )
-        m_pkg = re.search(r"^PackageVersion:\s*(\S+)\s*$", text, re.MULTILINE)
-        expect_eq(
-            errors,
-            f"{rel} PackageVersion",
-            m_pkg.group(1) if m_pkg else None,
-            APP_VERSION,
-        )
+        for key_name, expected_val in (("ManifestVersion", "1.9.0"), ("PackageVersion", APP_VERSION)):
+            key_lines = [
+                line for line in text.splitlines() if re.match(rf"^[ \t]*{key_name}:", line)
+            ]
+            if len(key_lines) != 1:
+                errors.append(
+                    f"{rel}: expected exactly 1 {key_name} entry, found {len(key_lines)}"
+                )
+            else:
+                m_key = re.fullmatch(rf"{key_name}:[ \t]*(\S+)[ \t]*(?:#.*)?", key_lines[0])
+                expect_eq(
+                    errors,
+                    f"{rel} {key_name}",
+                    m_key.group(1) if m_key else None,
+                    expected_val,
+                )
         expected_msix = f"TotalDrop_{MSIX_VERSION}_{arch_tag}.msix"
-        if expected_msix not in text:
-            errors.append(f"{rel}: InstallerUrl does not reference {expected_msix}")
+        installer_urls = [
+            m.group(1).split("#", 1)[0].strip().strip("'\"")
+            for m in re.finditer(r"^[ \t]*(?:-[ \t]+)?InstallerUrl:[ \t]*(.*)$", text, re.MULTILINE)
+        ]
+        if len(installer_urls) != 1:
+            errors.append(
+                f"{rel}: expected exactly 1 non-comment InstallerUrl entry, found {len(installer_urls)}"
+            )
+        elif not installer_urls[0].endswith(f"/{expected_msix}"):
+            errors.append(
+                f"{rel}: InstallerUrl ({installer_urls[0]!r}) does not reference {expected_msix}"
+            )
 
 
 def check_subplatforms_and_workflows(repo_root: Path, errors: list[str]) -> None:

@@ -45,6 +45,7 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
     private readonly NotificationService _notificationService;
     private AppWindow? _appWindow;
     private ContentDialog? _activeCloseDialog;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _sessionPollTimer;
     private ulong _routerId;
     private uint _sessionId;
     private bool _isWindowActive = true;
@@ -112,6 +113,8 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         ReceiveVm.TransferLifecycleChanged = OnTransferLifecycleChanged;
         SendVm.BackgroundNotificationReady = OnBackgroundNotificationReady;
         ReceiveVm.BackgroundNotificationReady = OnBackgroundNotificationReady;
+        SendVm.SessionPollingRequested = EnsureSessionPollingStarted;
+        ReceiveVm.SessionPollingRequested = EnsureSessionPollingStarted;
         SettingsVm.RequestNavigateBack = NavigateBackFromSettings;
 
         InitializeComponent();
@@ -313,8 +316,123 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    public void EnsureSessionPollingStarted()
+    {
+        if (SendVm.ActiveSessionId == 0 && ReceiveVm.ActiveSessionId == 0)
+        {
+            StopSessionPolling();
+            return;
+        }
+
+        if (_sessionPollTimer is null)
+        {
+            _sessionPollTimer = DispatcherQueue.CreateTimer();
+            _sessionPollTimer.Interval = TimeSpan.FromMilliseconds(80);
+            _sessionPollTimer.Tick += OnSessionPollTimerTick;
+        }
+
+        if (!_sessionPollTimer.IsRunning)
+        {
+            _sessionPollTimer.Start();
+        }
+    }
+
+    private void StopSessionPolling()
+    {
+        _sessionPollTimer?.Stop();
+    }
+
+    private void OnSessionPollTimerTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+    {
+        PollActiveSessionsOnce();
+    }
+
+    private void PollActiveSessionsOnce()
+    {
+        try
+        {
+            ulong sendSid = SendVm.ActiveSessionId;
+            if (sendSid != 0)
+            {
+                if (!NativeBridge.TryPollSessionEvents(sendSid, out List<SessionEventDto> sendEvents, out _))
+                {
+                    SendVm.ActiveSessionId = 0;
+                }
+                else
+                {
+                    foreach (SessionEventDto ev in sendEvents)
+                    {
+                        SendVm.ApplySessionEvent(ev);
+                        if (ev.Event is "done" or "failed")
+                        {
+                            if (ContentFrame.Content is SendPage loadedSend)
+                            {
+                                loadedSend.DismissCancelDialog();
+                            }
+
+                            DestroySessionHandleOnly(sendSid);
+                            SendVm.ActiveSessionId = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            ulong recvSid = ReceiveVm.ActiveSessionId;
+            if (recvSid != 0)
+            {
+                if (!NativeBridge.TryPollSessionEvents(recvSid, out List<SessionEventDto> recvEvents, out _))
+                {
+                    ReceiveVm.ActiveSessionId = 0;
+                }
+                else
+                {
+                    foreach (SessionEventDto ev in recvEvents)
+                    {
+                        ReceiveVm.ApplySessionEvent(ev);
+                        if (ev.Event is "done" or "declined" or "failed")
+                        {
+                            if (ContentFrame.Content is ReceivePage loadedRecv)
+                            {
+                                loadedRecv.DismissCancelDialog();
+                            }
+
+                            DestroySessionHandleOnly(recvSid);
+                            ReceiveVm.ActiveSessionId = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            NotifyActivePageKoseAnimation();
+
+            if (SendVm.ActiveSessionId == 0 && ReceiveVm.ActiveSessionId == 0)
+            {
+                StopSessionPolling();
+            }
+        }
+        catch (DllNotFoundException)
+        {
+            StopSessionPolling();
+        }
+    }
+
+    private void NotifyActivePageKoseAnimation()
+    {
+        if (ContentFrame.Content is SendPage sendPage)
+        {
+            sendPage.RefreshKoseAnimation();
+        }
+        else if (ContentFrame.Content is ReceivePage receivePage)
+        {
+            receivePage.RefreshKoseAnimation();
+        }
+    }
+
     public void ShutdownActiveSessions()
     {
+        StopSessionPolling();
         DismissActiveCloseDialog();
 
         if (ContentFrame.Content is SendPage sendPage)
@@ -324,6 +442,10 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         else if (ContentFrame.Content is ReceivePage receivePage)
         {
             receivePage.ShutdownSession();
+        }
+        else if (ContentFrame.Content is SettingsPage settingsPage)
+        {
+            settingsPage.DismissPrivacyDialog();
         }
 
         ShutdownSessionHandle(SendVm.ActiveSessionId);
@@ -337,6 +459,13 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
 
     public void DisposeSystemIntegrations()
     {
+        if (_sessionPollTimer is not null)
+        {
+            _sessionPollTimer.Stop();
+            _sessionPollTimer.Tick -= OnSessionPollTimerTick;
+            _sessionPollTimer = null;
+        }
+
         if (_appWindow is not null)
         {
             _appWindow.Closing -= OnAppWindowClosing;
@@ -370,6 +499,23 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
             {
                 // Design-time preview fallback.
             }
+        }
+    }
+
+    private static void DestroySessionHandleOnly(ulong sessionId)
+    {
+        if (sessionId == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = NativeBridge.SessionDestroy(sessionId);
+        }
+        catch (DllNotFoundException)
+        {
+            // Design-time preview fallback.
         }
     }
 
@@ -416,6 +562,10 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         else if (ContentFrame.Content is ReceivePage receivePage)
         {
             receivePage.DismissCancelDialog();
+        }
+        else if (ContentFrame.Content is SettingsPage settingsPage)
+        {
+            settingsPage.DismissPrivacyDialog();
         }
 
         if (RootShellGrid.XamlRoot is null)
@@ -854,6 +1004,7 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
 
                 if (!IsWindowBusy())
                 {
+                    PrepareReceiveForIncomingActivation();
                     NavigateToReceive();
                     ReceiveVm.ApplyActivatedCode(validated.DisplayEnglish);
                 }
@@ -867,6 +1018,7 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
+            PrepareReceiveForIncomingActivation();
             NavigateToReceive();
             string errKey = string.IsNullOrEmpty(error?.L10nKey) ? "errorInvalidCode" : error.L10nKey;
             string formatted = Strings.FormatMessage(errKey);
@@ -876,6 +1028,7 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         {
             if (!IsWindowBusy())
             {
+                PrepareReceiveForIncomingActivation();
                 NavigateToReceive();
                 ReceiveVm.ValidationMessage = Strings.ErrorInvalidCode;
             }
@@ -906,10 +1059,14 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        if (!IsWindowBusy() && SendVm.TryAddRawPaths(rawPaths))
+        if (!IsWindowBusy())
         {
-            NavigateToSend();
-            TriggerSendPageDirectoryMeasurement();
+            PrepareSendForIncomingActivation();
+            if (SendVm.TryAddRawPaths(rawPaths))
+            {
+                NavigateToSend();
+                TriggerSendPageDirectoryMeasurement();
+            }
         }
     }
 
@@ -952,55 +1109,20 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
             }
         }
 
-        if (args.Length == 1 && args[0] == "--ipc-await")
+        LaunchAction action = WindowActivationCoordinator.ClassifyLaunchArguments(args);
+        switch (action.Kind)
         {
-            return;
-        }
+            case LaunchActionKind.ProtocolUri when !string.IsNullOrEmpty(action.Target):
+                await RouteProtocolUriAsync(action.Target);
+                break;
 
-        foreach (string arg in args)
-        {
-            if (arg.StartsWith("totaldrop:", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("https://totaldrop.app/r#", StringComparison.OrdinalIgnoreCase))
-            {
-                await RouteProtocolUriAsync(arg);
-                return;
-            }
+            case LaunchActionKind.OpenScreen when !string.IsNullOrEmpty(action.Target):
+                await RouteOpenScreenAsync(action.Target);
+                break;
 
-            if (arg.StartsWith("--screen=", StringComparison.Ordinal))
-            {
-                string target = arg["--screen=".Length..];
-                if (target is "send" or "clipboard" or "receive" or "settings")
-                {
-                    await RouteOpenScreenAsync(target);
-                    return;
-                }
-            }
-        }
-
-        List<string> filePaths = [];
-        bool optionsActive = true;
-        foreach (string arg in args)
-        {
-            if (optionsActive)
-            {
-                if (arg == "--")
-                {
-                    optionsActive = false;
-                    continue;
-                }
-
-                if (arg == "--explorer-send" || (arg.StartsWith('-') && arg.Length > 1))
-                {
-                    continue;
-                }
-            }
-
-            filePaths.Add(arg);
-        }
-
-        if (filePaths.Count > 0)
-        {
-            await RouteExplorerSendAsync(filePaths);
+            case LaunchActionKind.ExplorerSend when action.Paths is { Count: > 0 } paths:
+                await RouteExplorerSendAsync(paths);
+                break;
         }
     }
 
@@ -1018,6 +1140,7 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         {
             case "navigate_send_files" when decision.Paths is { Length: > 0 } paths:
                 IsBusyNoticeOpen = false;
+                PrepareSendForIncomingActivation();
                 _ = SendVm.TryAddRawPaths(paths);
                 NavigateToSend();
                 TriggerSendPageDirectoryMeasurement();
@@ -1025,12 +1148,14 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
 
             case "navigate_send_text" when !string.IsNullOrEmpty(decision.RawText):
                 IsBusyNoticeOpen = false;
+                PrepareSendForIncomingActivation();
                 SendVm.ApplyPastedText(decision.RawText, fromClipboardShortcut: false);
                 NavigateToSend();
                 break;
 
             case "navigate_receive_code" when decision.Code is not null:
                 IsBusyNoticeOpen = false;
+                PrepareReceiveForIncomingActivation();
                 NavigateToReceive();
                 ReceiveVm.ApplyActivatedCode(decision.Code.DisplayEnglish);
                 break;
@@ -1050,6 +1175,31 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void PrepareSendForIncomingActivation()
+    {
+        _ = WindowActivationCoordinator.PrepareSendForIncomingActivation(
+            SendVm.ToLifecycleStage(),
+            clearSelection =>
+            {
+                DestroySessionHandleOnly(SendVm.ActiveSessionId);
+                SendVm.ResetToIdle(clearSelection);
+                NotifyActivePageKoseAnimation();
+            });
+    }
+
+    private void PrepareReceiveForIncomingActivation()
+    {
+        _ = WindowActivationCoordinator.PrepareReceiveForIncomingActivation(
+            ReceiveVm.ToLifecycleStage(),
+            ReceiveVm.IsReceivedTextVisible,
+            () =>
+            {
+                DestroySessionHandleOnly(ReceiveVm.ActiveSessionId);
+                ReceiveVm.ResetToIdle(clearCode: false);
+                NotifyActivePageKoseAnimation();
+            });
+    }
+
     private void TriggerSendPageDirectoryMeasurement()
     {
         if (ContentFrame.Content is SendPage sendPage)
@@ -1066,6 +1216,7 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
                 NavigateToSend();
                 break;
             case "clipboard":
+                PrepareSendForIncomingActivation();
                 NavigateToSend();
                 _ = PasteClipboardForShortcutAsync();
                 break;

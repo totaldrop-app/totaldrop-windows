@@ -108,6 +108,12 @@ jobs:
         run: python3 tools/verify-msix-artifact.py --self-test-bundle
       - name: Verify 6 isolated sub-platform x CPU units
         run: python3 tools/verify-subplatforms.py
+      - name: Verify zero live production endpoint probing in E2E suite
+        run: python3 -B tools/e2e/verify_static_contracts.py --scan-no-prod-probing
+      - name: Self-test MakePri XML dump E2E verifier
+        run: python3 -B tools/e2e/verify_msix_opc.py --self-test-pri
+      - name: Self-test synthetic PE32+ x64/ARM64 hardening E2E verifier
+        run: python3 -B tools/e2e/verify_pe_hardening.py --unit-test-synthetic
 
   windows-msvc-targets:
     name: Windows MSVC targets & manifests
@@ -165,7 +171,8 @@ jobs:
             'target-x86_64/build-x64.ps1',
             'target-arm64/build-arm64.ps1',
             'tools/build-msixbundle.ps1',
-            'tools/run-wack.ps1'
+            'tools/run-wack.ps1',
+            'tools/e2e/Invoke-WindowsE2E.ps1'
           )
           foreach ($script in $scripts) {
             $fullPath = (Resolve-Path -LiteralPath $script).Path
@@ -375,6 +382,23 @@ jobs:
             dist/TotalDrop_0.1.1.0_x64.msix
             dist/SHA256SUMS
           if-no-files-found: error
+      - name: Run headless Windows .NET 10 E2E unit & M3 integration tests (22/23)
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          Push-Location ui-winui3-fluent2
+          try {
+            $env:TOTALDROP_FFI_DLL_PATH = (Resolve-Path -LiteralPath "..\target\x86_64-pc-windows-msvc\release\totaldrop_windows_ffi.dll").Path
+            Write-Host "Using native FFI DLL: $($env:TOTALDROP_FFI_DLL_PATH)"
+            dotnet test TotalDrop.WinUI.Tests\TotalDrop.WinUI.Tests.csproj -c Release --filter "FullyQualifiedName!~LoopbackRelayTransferTests" --blame-hang-timeout 2m --verbosity normal
+            if ($LASTEXITCODE -ne 0) {
+              throw "TotalDrop.WinUI.Tests failed with exit code $LASTEXITCODE"
+            }
+          }
+          finally {
+            Pop-Location
+          }
 
   windows-arm64-msix:
     name: Windows ARM64 Native AOT & MSIX

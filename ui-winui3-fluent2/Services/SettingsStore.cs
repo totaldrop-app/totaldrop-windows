@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The TotalDrop Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using TotalDrop.WinUI.Interop;
@@ -70,6 +72,14 @@ public sealed class SettingsStore
     /// </summary>
     public BridgeNetworkConfigDto Load()
     {
+        lock (_sync)
+        {
+            return LoadLocked();
+        }
+    }
+
+    private BridgeNetworkConfigDto LoadLocked()
+    {
         BridgeNetworkConfigDto defaults = CreateDefaultConfig();
         if (!File.Exists(SettingsPath))
         {
@@ -97,10 +107,11 @@ public sealed class SettingsStore
                 return defaults;
             }
 
-            string rendezvousCandidate = string.IsNullOrWhiteSpace(parsed.RendezvousServer)
+            string rendezvousCandidate = string.IsNullOrEmpty(parsed.RendezvousServer)
                 ? defaults.RendezvousServer
-                : parsed.RendezvousServer.Trim();
-            string rendezvous = IsValidLoadedServerUrl(rendezvousCandidate)
+                : parsed.RendezvousServer.Trim(' ');
+            string rendezvous = !string.IsNullOrEmpty(rendezvousCandidate)
+                && IsValidLoadedServerUrl(rendezvousCandidate)
                 ? rendezvousCandidate
                 : defaults.RendezvousServer;
 
@@ -111,7 +122,7 @@ public sealed class SettingsStore
             }
             else
             {
-                string relayTrimmed = parsed.RelayServer.Trim();
+                string relayTrimmed = parsed.RelayServer.Trim(' ');
                 relay = relayTrimmed.Length == 0 || IsValidLoadedServerUrl(relayTrimmed)
                     ? relayTrimmed
                     : defaults.RelayServer;
@@ -124,7 +135,7 @@ public sealed class SettingsStore
             }
             else
             {
-                string stunTrimmed = parsed.StunServer.Trim();
+                string stunTrimmed = parsed.StunServer.Trim(' ');
                 stun = !ContainsDisallowedControlOrBidi(stunTrimmed)
                     ? stunTrimmed
                     : defaults.StunServer;
@@ -182,13 +193,14 @@ public sealed class SettingsStore
     public bool TrySaveServerUrl(string rawUrl, out string? errorL10nKey)
     {
         errorL10nKey = null;
-        string trimmed = (rawUrl ?? string.Empty).Trim();
-        if (!NativeBridge.TryValidateServerUrl(trimmed, out _))
+        string raw = rawUrl ?? string.Empty;
+        if (!NativeBridge.TryValidateServerUrl(raw, out _))
         {
             errorL10nKey = "settingsServerInvalid";
             return false;
         }
 
+        string trimmed = raw.Trim(' ');
         lock (_sync)
         {
             BridgeNetworkConfigDto updated = _current with { RendezvousServer = trimmed };
@@ -295,7 +307,7 @@ public sealed class SettingsStore
             path,
             FileMode.Open,
             FileAccess.Read,
-            FileShare.Read,
+            FileShare.Read | FileShare.Delete,
             bufferSize: 4096,
             FileOptions.SequentialScan);
 
@@ -345,15 +357,31 @@ public sealed class SettingsStore
         }
     }
 
-    private static bool HasBasicWebSocketScheme(string candidate)
+    internal static bool HasBasicWebSocketScheme(string candidate)
     {
+        if (string.IsNullOrEmpty(candidate))
+        {
+            return false;
+        }
+
+        foreach (char c in candidate)
+        {
+            if (c < 0x21 || c > 0x7E)
+            {
+                return false;
+            }
+        }
+
+        bool isPlainWs;
         string rest;
         if (candidate.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
         {
+            isPlainWs = false;
             rest = candidate[6..];
         }
         else if (candidate.StartsWith("ws://", StringComparison.OrdinalIgnoreCase))
         {
+            isPlainWs = true;
             rest = candidate[5..];
         }
         else
@@ -373,15 +401,77 @@ public sealed class SettingsStore
             return false;
         }
 
-        foreach (char c in authority)
+        if (authority.StartsWith('['))
         {
-            if (char.IsWhiteSpace(c))
+            int endBracket = authority.IndexOf(']');
+            if (endBracket <= 1)
+            {
+                return false;
+            }
+
+            string ipv6Text = authority[1..endBracket];
+            if (ipv6Text.Contains('%')
+                || !IPAddress.TryParse(ipv6Text, out IPAddress? addr)
+                || addr.AddressFamily != AddressFamily.InterNetworkV6)
+            {
+                return false;
+            }
+
+            string afterBracket = authority[(endBracket + 1)..];
+            if (afterBracket.Length > 0)
+            {
+                if (!afterBracket.StartsWith(':') || !IsValidPort(afterBracket[1..]))
+                {
+                    return false;
+                }
+            }
+
+            return !isPlainWs || (IPAddress.IsLoopback(addr) && string.Equals(ipv6Text, "::1", StringComparison.Ordinal));
+        }
+
+        int colonIdx = authority.IndexOf(':');
+        string host = colonIdx >= 0 ? authority[..colonIdx] : authority;
+        string? portStr = colonIdx >= 0 ? authority[(colonIdx + 1)..] : null;
+        if (host.Length == 0
+            || host.Contains('[')
+            || host.Contains(']')
+            || host.Contains(':')
+            || Uri.CheckHostName(host) is not (UriHostNameType.Dns or UriHostNameType.IPv4))
+        {
+            return false;
+        }
+
+        if (portStr is not null && !IsValidPort(portStr))
+        {
+            return false;
+        }
+
+        if (isPlainWs)
+        {
+            return string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(host, "127.0.0.1", StringComparison.Ordinal);
+        }
+
+        return true;
+    }
+
+    private static bool IsValidPort(string portStr)
+    {
+        if (portStr.Length == 0 || portStr.Length > 5)
+        {
+            return false;
+        }
+
+        foreach (char c in portStr)
+        {
+            if (c is < '0' or > '9')
             {
                 return false;
             }
         }
 
-        return true;
+        return ushort.TryParse(portStr, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out ushort port)
+            && port >= 1;
     }
 
     private static bool ContainsDisallowedControlOrBidi(string value)

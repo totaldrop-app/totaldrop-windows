@@ -2361,36 +2361,207 @@ def verify_manifest_extensions(manifest_root: ET.Element) -> None:
         )
 
 
-def verify_pri_dump(pri_dump_path: Path) -> None:
-    raw = pri_dump_path.read_bytes()
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        text = raw.decode("utf-16", errors="replace")
-    else:
-        text = raw.decode("utf-8-sig", errors="replace")
-    upper_text = text.upper()
-    required_tokens = (
-        "StoreLogo.png",
-        "Square44x44Logo.png",
-        "Square150x150Logo.png",
-        "Wide310x150Logo.png",
-        "Square71x71Logo.png",
-        "Square310x310Logo.png",
-        "App.xbf",
-        "MainWindow.xbf",
-        "SendPage.xbf",
-        "ReceivePage.xbf",
-        "SettingsPage.xbf",
-    )
-    missing = [tok for tok in required_tokens if tok not in text]
-    for qualifier in ("UNPLATED", "LIGHTUNPLATED"):
-        if not re.search(rf"(?<![A-Z0-9]){qualifier}(?![A-Z0-9])", upper_text):
-            missing.append(qualifier)
-    if missing:
-        raise ValueError(f"resources.pri dump missing expected entries: {missing}")
+REQUIRED_PRI_RESOURCE_KEYS: tuple[str, ...] = (
+    "appTagline",
+    "sendTitle",
+    "receiveTitle",
+    "desktopSendWith",
+    "keepAwakeReason",
+)
+REQUIRED_PRI_TARGET_SIZES: tuple[str, ...] = ("16", "24", "32", "48", "256")
+REQUIRED_PRI_FILES: tuple[str, ...] = (
+    "StoreLogo.png",
+    "Square44x44Logo.png",
+    "Square150x150Logo.png",
+    "Wide310x150Logo.png",
+    "Square71x71Logo.png",
+    "Square310x310Logo.png",
+    "App.xbf",
+    "MainWindow.xbf",
+    "SendPage.xbf",
+    "ReceivePage.xbf",
+    "SettingsPage.xbf",
+)
 
-    for lang_marker in ('"EN"', '"TR"', '"AR"', '"JA"', '"ZH-HANS"', '"ZH-HANT"'):
-        if lang_marker not in upper_text:
-            raise ValueError(f"resources.pri dump missing locale candidate {lang_marker}")
+
+def _pri_local_tag(el: ET.Element) -> str:
+    return el.tag.split("}", 1)[-1]
+
+
+def _extract_pri_candidate_qualifiers(
+    cand: ET.Element,
+    qualifier_sets: dict[str, list[tuple[str, str]]],
+) -> list[tuple[str, str]]:
+    """Extract qualifier (name, value) pairs from inline qualifiers=, child <Qualifier>/<QualifierSet>, and qualifierSet=."""
+    pairs: list[tuple[str, str]] = []
+    inline = cand.attrib.get("qualifiers", "").strip()
+    if inline:
+        for tok in re.split(r"[,;]", inline):
+            tok = tok.strip()
+            if not tok:
+                continue
+            parts = re.split(r"[-=]", tok, maxsplit=1)
+            if len(parts) == 2:
+                k, v = parts[0].strip(), parts[1].strip()
+                if k and v:
+                    pairs.append((k, v))
+    for child in cand:
+        child_tag = _pri_local_tag(child)
+        if child_tag == "Qualifier":
+            qname = child.attrib.get("name", "").strip()
+            qval = child.attrib.get("value", "").strip()
+            if qname and qval:
+                pairs.append((qname, qval))
+        elif child_tag == "QualifierSet":
+            found_inline_q = False
+            for q in child:
+                if _pri_local_tag(q) == "Qualifier":
+                    qname = q.attrib.get("name", "").strip()
+                    qval = q.attrib.get("value", "").strip()
+                    if qname and qval:
+                        pairs.append((qname, qval))
+                        found_inline_q = True
+            if not found_inline_q:
+                qidx = child.attrib.get("index", "").strip()
+                if qidx and qidx in qualifier_sets:
+                    pairs.extend(qualifier_sets[qidx])
+    qset_ref = cand.attrib.get("qualifierSet", "").strip()
+    if qset_ref and qset_ref in qualifier_sets:
+        pairs.extend(qualifier_sets[qset_ref])
+    return pairs
+
+
+def verify_pri_dump(pri_dump_path: Path) -> None:
+    """Parse MakePri.exe XML dump and verify all 35 locales, 5 UI/COM keys, 6 logos, 5 XBFs, and 5x2 unplated matrix."""
+    root = ET.parse(pri_dump_path).getroot()
+
+    qualifier_sets: dict[str, list[tuple[str, str]]] = {}
+    for el in root.iter():
+        if _pri_local_tag(el) != "QualifierSet":
+            continue
+        qidx = el.attrib.get("index", "").strip()
+        if not qidx:
+            continue
+        qpairs: list[tuple[str, str]] = []
+        for child in el:
+            if _pri_local_tag(child) == "Qualifier":
+                qname = child.attrib.get("name", "").strip()
+                qval = child.attrib.get("value", "").strip()
+                if qname and qval:
+                    qpairs.append((qname, qval))
+        if qpairs:
+            qualifier_sets[qidx] = qpairs
+
+    named_resources_with_cands: set[str] = set()
+    named_leaf_lower: set[str] = set()
+    # Map (subtree_full_path, raw_normalized_name) -> language set so unrelated subtrees
+    # (e.g. Other/appTagline vs Resources/appTagline) neither mask nor cross-contaminate each other.
+    lang_by_resource_path: dict[tuple[str, str], set[str]] = {}
+    all_langs: set[str] = set()
+    square44_quals: set[str] = set()
+    square44_sizes_by_altform: dict[str, set[str]] = {"UNPLATED": set(), "LIGHTUNPLATED": set()}
+
+    def _walk_pri(elem: ET.Element, subtree_prefix: str) -> None:
+        tag = _pri_local_tag(elem)
+        if tag == "ResourceMapSubtree":
+            sub_name = elem.attrib.get("name", "").strip().replace("\\", "/").strip("/")
+            next_prefix = f"{subtree_prefix}/{sub_name}" if (subtree_prefix and sub_name) else (sub_name or subtree_prefix)
+            for child in elem:
+                _walk_pri(child, next_prefix)
+            return
+        if tag == "NamedResource":
+            name = elem.attrib.get("name", "").strip()
+            if not name:
+                return
+            norm_name = name.replace("\\", "/")
+            full_path = f"{subtree_prefix}/{norm_name}" if subtree_prefix else norm_name
+            leaf = norm_name.rsplit("/", 1)[-1]
+            is_square44 = leaf.lower() == "square44x44logo.png"
+            cand_count = 0
+            langs: set[str] = set()
+            for cand in elem:
+                if _pri_local_tag(cand) != "Candidate":
+                    continue
+                cand_count += 1
+                cand_ts: set[str] = set()
+                cand_alts: set[str] = set()
+                for k, v_clean in _extract_pri_candidate_qualifiers(cand, qualifier_sets):
+                    k_up = k.upper()
+                    if k_up == "LANGUAGE":
+                        v_low = v_clean.lower()
+                        langs.add(v_low)
+                        all_langs.add(v_low)
+                    elif k_up == "TARGETSIZE":
+                        cand_ts.add(v_clean)
+                    elif k_up in ("ALTERNATEFORM", "ALTFORM"):
+                        if is_square44:
+                            v_up = v_clean.upper()
+                            if v_up in ("UNPLATED", "LIGHTUNPLATED"):
+                                square44_quals.add(v_up)
+                                cand_alts.add(v_up)
+                if is_square44 and cand_ts and cand_alts:
+                    for alt in cand_alts:
+                        square44_sizes_by_altform[alt].update(cand_ts)
+            if cand_count > 0:
+                named_resources_with_cands.add(norm_name)
+                named_leaf_lower.add(leaf.lower())
+                lang_by_resource_path.setdefault((full_path, norm_name), set()).update(langs)
+            return
+        for child in elem:
+            _walk_pri(child, subtree_prefix)
+
+    _walk_pri(root, "")
+
+    missing_files = [
+        tok for tok in REQUIRED_PRI_FILES if tok.lower() not in named_leaf_lower
+    ]
+    if missing_files:
+        raise ValueError(f"resources.pri dump missing expected NamedResource entries: {missing_files}")
+
+    for alt in ("UNPLATED", "LIGHTUNPLATED"):
+        if alt not in square44_quals:
+            raise ValueError(f"resources.pri dump Square44x44Logo.png missing AlternateForm={alt}")
+        missing_ts = [sz for sz in REQUIRED_PRI_TARGET_SIZES if sz not in square44_sizes_by_altform[alt]]
+        if missing_ts:
+            raise ValueError(
+                f"resources.pri dump Square44x44Logo.png AlternateForm={alt} missing TargetSize candidates: {missing_ts}"
+            )
+
+    expected_lower = {tag.lower(): tag for tag in EXPECTED_MANIFEST_LANGUAGES}
+    expected_set = set(expected_lower)
+    missing_global = [orig for low, orig in sorted(expected_lower.items()) if low not in all_langs]
+    if missing_global:
+        present_count = len(expected_lower) - len(missing_global)
+        raise ValueError(
+            f"resources.pri dump language count mismatch ({present_count} != 35); missing: {missing_global}"
+        )
+
+    for key in REQUIRED_PRI_RESOURCE_KEYS:
+        key_candidates: list[tuple[int, int, set[str]]] = []
+        for (full_path, raw_norm), r_langs in lang_by_resource_path.items():
+            if raw_norm != key and not raw_norm.endswith(f"/{key}"):
+                continue
+            low_raw = raw_norm.lower()
+            low_full = full_path.lower()
+            is_resources_scope = (
+                low_raw == f"resources/{key.lower()}"
+                or low_full == f"resources/{key.lower()}"
+                or low_full.endswith(f"/resources/{key.lower()}")
+                or low_raw == key.lower()
+            )
+            priority = 2 if is_resources_scope else 1
+            coverage = len(r_langs & expected_set)
+            key_candidates.append((priority, coverage, r_langs))
+        if not key_candidates:
+            raise ValueError(f"resources.pri dump missing expected NamedResource key: {key}")
+        # Prefer complete Resources/{key} or bare {key} match, then highest coverage without unioning unrelated subtrees.
+        key_candidates.sort(key=lambda item: (item[1] == len(expected_set), item[0], item[1]), reverse=True)
+        key_langs = key_candidates[0][2]
+        missing_key = [orig for low, orig in sorted(expected_lower.items()) if low not in key_langs]
+        if missing_key:
+            raise ValueError(
+                f"resources.pri dump key {key!r} missing languages ({35 - len(missing_key)} != 35): {missing_key}"
+            )
 
 
 def smoke_test_ffi_dll(dll_path: Path) -> None:
@@ -6053,9 +6224,368 @@ def run_self_test_bundle() -> int:
                 "symbolic link",
             )
 
+        # Cases 39a..39e (Tier-5 C2-F4 / R2-N1): XML-parsed verify_pri_dump positive & negative checks.
+        def _build_pri_xml(
+            locales: list[str],
+            *,
+            unplated_sizes: tuple[str, ...] = REQUIRED_PRI_TARGET_SIZES,
+            lightunplated_sizes: tuple[str, ...] = REQUIRED_PRI_TARGET_SIZES,
+            use_qualifier_sets: bool = False,
+            xml_encoding: str = "UTF-8",
+        ) -> str:
+            qset_lines: list[str] = []
+            res_lines: list[str] = []
+            if use_qualifier_sets:
+                qidx = 0
+                lang_qidx: dict[str, int] = {}
+                for loc in locales:
+                    qset_lines.append(
+                        f'      <QualifierSet index="{qidx}"><Qualifier name="Language" value="{loc.upper()}" /></QualifierSet>'
+                    )
+                    lang_qidx[loc] = qidx
+                    qidx += 1
+                for key in REQUIRED_PRI_RESOURCE_KEYS:
+                    cands = "".join(
+                        f'<Candidate qualifierSet="{lang_qidx[loc]}" type="String"><Value>{key}-{loc}</Value></Candidate>'
+                        for loc in locales
+                    )
+                    res_lines.append(f'      <NamedResource name="{key}">{cands}</NamedResource>')
+                sq_cands: list[str] = []
+                for alt, sizes in (("UNPLATED", unplated_sizes), ("LIGHTUNPLATED", lightunplated_sizes)):
+                    for sz in sizes:
+                        qset_lines.append(
+                            f'      <QualifierSet index="{qidx}">'
+                            f'<Qualifier name="TargetSize" value="{sz}" />'
+                            f'<Qualifier name="AlternateForm" value="{alt}" /></QualifierSet>'
+                        )
+                        sq_cands.append(
+                            f'<Candidate qualifierSet="{qidx}" type="Path"><Value>Assets\\Square44x44Logo.{alt}.{sz}.png</Value></Candidate>'
+                        )
+                        qidx += 1
+                res_lines.append(f'      <NamedResource name="Assets\\Square44x44Logo.png">{"".join(sq_cands)}</NamedResource>')
+            else:
+                for key in REQUIRED_PRI_RESOURCE_KEYS:
+                    cands = "".join(
+                        f'<Candidate qualifiers="Language-{loc.upper()}" type="String"><Value>{key}-{loc}</Value></Candidate>'
+                        for loc in locales
+                    )
+                    res_lines.append(f'      <NamedResource name="{key}">{cands}</NamedResource>')
+                sq_cands = []
+                for alt, sizes in (("UNPLATED", unplated_sizes), ("LIGHTUNPLATED", lightunplated_sizes)):
+                    for sz in sizes:
+                        sq_cands.append(
+                            f'<Candidate qualifiers="TargetSize-{sz}, AlternateForm-{alt}" type="Path">'
+                            f"<Value>Assets\\Square44x44Logo.{alt}.{sz}.png</Value></Candidate>"
+                        )
+                res_lines.append(f'      <NamedResource name="Assets\\Square44x44Logo.png">{"".join(sq_cands)}</NamedResource>')
+
+            for fname in REQUIRED_PRI_FILES:
+                if fname == "Square44x44Logo.png":
+                    continue
+                res_lines.append(
+                    f'      <NamedResource name="{fname}"><Candidate type="Path"><Value>{fname}</Value></Candidate></NamedResource>'
+                )
+            dec_block = f"    <DecisionInfo>\n" + "\n".join(qset_lines) + "\n    </DecisionInfo>\n" if qset_lines else ""
+            return (
+                f'<?xml version="1.0" encoding="{xml_encoding}"?>\n'
+                "<PriInfo>\n"
+                '  <ResourceMap name="TotalDrop">\n'
+                + dec_block
+                + '    <ResourceMapSubtree name="Resources">\n'
+                + "\n".join(res_lines)
+                + "\n    </ResourceMapSubtree>\n"
+                "  </ResourceMap>\n"
+                "</PriInfo>\n"
+            )
+
+        all_35 = sorted(EXPECTED_MANIFEST_LANGUAGES)
+        pri_ok_inline = tmp_dir / "pri_39a_inline.xml"
+        pri_ok_inline.write_text(_build_pri_xml(all_35, use_qualifier_sets=False), encoding="utf-8")
+        verify_pri_dump(pri_ok_inline)
+        pri_ok_qset = tmp_dir / "pri_39a_qset.xml"
+        pri_ok_qset.write_text(_build_pri_xml(all_35, use_qualifier_sets=True), encoding="utf-8")
+        verify_pri_dump(pri_ok_qset)
+
+        # Case 39b: 34 locales missing 'sw' -> FAIL
+        pri_missing_sw = tmp_dir / "pri_39b_missing_sw.xml"
+        pri_missing_sw.write_text(
+            _build_pri_xml([loc for loc in all_35 if loc != "sw"]),
+            encoding="utf-8",
+        )
+        expect_fail("case-39b-pri-missing-sw", lambda: verify_pri_dump(pri_missing_sw), "sw")
+
+        # Case 39c: partial UNPLATED (256 only, missing 16/24/32/48) -> FAIL
+        pri_partial_unplated = tmp_dir / "pri_39c_partial_unplated.xml"
+        pri_partial_unplated.write_text(
+            _build_pri_xml(all_35, unplated_sizes=("256",)),
+            encoding="utf-8",
+        )
+        expect_fail(
+            "case-39c-pri-partial-unplated",
+            lambda: verify_pri_dump(pri_partial_unplated),
+            "AlternateForm=UNPLATED",
+        )
+
+        # Case 39d: XML comment-only spoof placing required tokens inside <!-- ... --> -> FAIL
+        pri_comment_spoof = tmp_dir / "pri_39d_comment_spoof.xml"
+        pri_comment_spoof.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<PriInfo>\n"
+            "  <!-- StoreLogo.png Square44x44Logo.png Square150x150Logo.png Wide310x150Logo.png "
+            'Square71x71Logo.png Square310x310Logo.png App.xbf MainWindow.xbf SendPage.xbf '
+            'ReceivePage.xbf SettingsPage.xbf UNPLATED LIGHTUNPLATED "EN" "TR" "AR" "JA" "ZH-HANS" "ZH-HANT" -->\n'
+            '  <ResourceMap name="TotalDrop" />\n'
+            "</PriInfo>\n",
+            encoding="utf-8",
+        )
+        expect_fail(
+            "case-39d-pri-comment-spoof",
+            lambda: verify_pri_dump(pri_comment_spoof),
+            "missing expected NamedResource entries",
+        )
+
+        # Case 39e (Tier-5 R2-N1): UTF-8 BOM and UTF-16LE MakePri.exe XML dumps pass when valid,
+        # and UTF-16LE still rejects missing locales.
+        pri_ok_utf8_bom = tmp_dir / "pri_39e_utf8_bom.xml"
+        pri_ok_utf8_bom.write_bytes(
+            b"\xef\xbb\xbf"
+            + _build_pri_xml(all_35, use_qualifier_sets=False, xml_encoding="utf-8").encode("utf-8")
+        )
+        verify_pri_dump(pri_ok_utf8_bom)
+
+        pri_ok_utf16le = tmp_dir / "pri_39e_utf16le.xml"
+        pri_utf16le_bytes = (
+            b"\xff\xfe"
+            + _build_pri_xml(all_35, use_qualifier_sets=False, xml_encoding="utf-16").encode("utf-16-le")
+        )
+        pri_ok_utf16le.write_bytes(pri_utf16le_bytes)
+        try:
+            pri_utf16le_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        else:
+            raise AssertionError("case-39e-pri-utf16le: UTF-16LE fixture unexpectedly decoded as UTF-8")
+        verify_pri_dump(pri_ok_utf16le)
+
+        pri_bad_utf16le = tmp_dir / "pri_39e_utf16le_missing_sw.xml"
+        pri_bad_utf16le.write_bytes(
+            b"\xff\xfe"
+            + _build_pri_xml(
+                [loc for loc in all_35 if loc != "sw"],
+                use_qualifier_sets=False,
+                xml_encoding="utf-16",
+            ).encode("utf-16-le")
+        )
+        expect_fail("case-39e-pri-utf16le-missing-sw", lambda: verify_pri_dump(pri_bad_utf16le), "sw")
+
+        # Case 39f (Tier-5 R2-C2-F5): Unrelated NamedResource matching substring "square44x44logo"
+        # must NOT satisfy Square44x44Logo.png's mandatory 5x2 UNPLATED/LIGHTUNPLATED matrix.
+        pri_sq44_spoof = tmp_dir / "pri_39f_sq44_substring_spoof.xml"
+        spoof_res: list[str] = []
+        for key in REQUIRED_PRI_RESOURCE_KEYS:
+            cands = "".join(
+                f'<Candidate qualifiers="Language-{loc.upper()}" type="String"><Value>{key}-{loc}</Value></Candidate>'
+                for loc in all_35
+            )
+            spoof_res.append(f'      <NamedResource name="{key}">{cands}</NamedResource>')
+        spoof_res.append(
+            '      <NamedResource name="Assets\\Square44x44Logo.png">'
+            + "".join(
+                f'<Candidate qualifiers="Scale-{sc}" type="Path"><Value>Assets\\Square44x44Logo.scale-{sc}.png</Value></Candidate>'
+                for sc in ("100", "125", "150", "200", "400")
+            )
+            + "</NamedResource>"
+        )
+        fake_cands = "".join(
+            f'<Candidate qualifiers="TargetSize-{sz}, AlternateForm-{alt}" type="Path"><Value>junk.txt</Value></Candidate>'
+            for alt in ("UNPLATED", "LIGHTUNPLATED")
+            for sz in REQUIRED_PRI_TARGET_SIZES
+        )
+        spoof_res.append(f'      <NamedResource name="FakeSquare44x44LogoJunk.txt">{fake_cands}</NamedResource>')
+        for fname in REQUIRED_PRI_FILES:
+            if fname == "Square44x44Logo.png":
+                continue
+            spoof_res.append(
+                f'      <NamedResource name="{fname}"><Candidate type="Path"><Value>{fname}</Value></Candidate></NamedResource>'
+            )
+        pri_sq44_spoof.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<PriInfo><ResourceMap name="TotalDrop"><ResourceMapSubtree name="Resources">\n'
+            + "\n".join(spoof_res)
+            + "\n</ResourceMapSubtree></ResourceMap></PriInfo>\n",
+            encoding="utf-8",
+        )
+        expect_fail(
+            "case-39f-pri-sq44-substring-spoof",
+            lambda: verify_pri_dump(pri_sq44_spoof),
+            "AlternateForm=UNPLATED",
+        )
+
+        # Case 39g (Tier-5 R2-C2-F5): Child <Qualifier> elements AND combined inline qualifiers= + qualifierSet= PASS.
+        pri_child_qual = tmp_dir / "pri_39g_child_qualifier.xml"
+        child_res: list[str] = []
+        for key in REQUIRED_PRI_RESOURCE_KEYS:
+            cands = "".join(
+                f'<Candidate type="String"><Qualifier name="Language" value="{loc.upper()}" /><Value>{key}-{loc}</Value></Candidate>'
+                for loc in all_35
+            )
+            child_res.append(f'      <NamedResource name="{key}">{cands}</NamedResource>')
+        child_sq = "".join(
+            f'<Candidate type="Path"><Qualifier name="TargetSize" value="{sz}" />'
+            f'<Qualifier name="AlternateForm" value="{alt}" /><Value>Assets\\sq.png</Value></Candidate>'
+            for alt in ("UNPLATED", "LIGHTUNPLATED")
+            for sz in REQUIRED_PRI_TARGET_SIZES
+        )
+        child_res.append(f'      <NamedResource name="Assets\\Square44x44Logo.png">{child_sq}</NamedResource>')
+        for fname in REQUIRED_PRI_FILES:
+            if fname != "Square44x44Logo.png":
+                child_res.append(
+                    f'      <NamedResource name="{fname}"><Candidate type="Path"><Value>{fname}</Value></Candidate></NamedResource>'
+                )
+        pri_child_qual.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<PriInfo><ResourceMap name="TotalDrop"><ResourceMapSubtree name="Resources">\n'
+            + "\n".join(child_res)
+            + "\n</ResourceMapSubtree></ResourceMap></PriInfo>\n",
+            encoding="utf-8",
+        )
+        verify_pri_dump(pri_child_qual)
+
+        pri_split_qset = tmp_dir / "pri_39g_split_inline_qset.xml"
+        split_res: list[str] = []
+        for key in REQUIRED_PRI_RESOURCE_KEYS:
+            cands = "".join(
+                f'<Candidate qualifiers="Language-{loc.upper()}" type="String"><Value>{key}-{loc}</Value></Candidate>'
+                for loc in all_35
+            )
+            split_res.append(f'      <NamedResource name="{key}">{cands}</NamedResource>')
+        split_sq = "".join(
+            f'<Candidate qualifiers="TargetSize-{sz}" qualifierSet="{qidx}" type="Path"><Value>Assets\\sq.png</Value></Candidate>'
+            for qidx, _alt in (("90", "UNPLATED"), ("91", "LIGHTUNPLATED"))
+            for sz in REQUIRED_PRI_TARGET_SIZES
+        )
+        split_res.append(f'      <NamedResource name="Assets\\Square44x44Logo.png">{split_sq}</NamedResource>')
+        for fname in REQUIRED_PRI_FILES:
+            if fname != "Square44x44Logo.png":
+                split_res.append(
+                    f'      <NamedResource name="{fname}"><Candidate type="Path"><Value>{fname}</Value></Candidate></NamedResource>'
+                )
+        pri_split_qset.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<PriInfo><ResourceMap name="TotalDrop"><DecisionInfo>'
+            '<QualifierSet index="90"><Qualifier name="AlternateForm" value="UNPLATED" /></QualifierSet>'
+            '<QualifierSet index="91"><Qualifier name="AlternateForm" value="LIGHTUNPLATED" /></QualifierSet>'
+            '</DecisionInfo><ResourceMapSubtree name="Resources">\n'
+            + "\n".join(split_res)
+            + "\n</ResourceMapSubtree></ResourceMap></PriInfo>\n",
+            encoding="utf-8",
+        )
+        verify_pri_dump(pri_split_qset)
+
+        # Case 39h (Tier-5 R2-C2-F5): Multi-subtree Other/appTagline (1 lang) before Resources/appTagline (35 langs) PASSES,
+        # while splitting 17+18 languages across unrelated subtrees (neither complete) FAILS.
+        pri_multi_sub_ok = tmp_dir / "pri_39h_multisub_ok.xml"
+        pri_multi_sub_ok.write_text(
+            _build_pri_xml(all_35, use_qualifier_sets=False).replace(
+                '<NamedResource name="appTagline">',
+                '<NamedResource name="Other/appTagline"><Candidate qualifiers="Language-EN" type="String"><Value>x</Value></Candidate></NamedResource>\n'
+                '      <NamedResource name="Resources/appTagline">',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        verify_pri_dump(pri_multi_sub_ok)
+
+        pri_multi_sub_split = tmp_dir / "pri_39h_multisub_split.xml"
+        first_half = "".join(
+            f'<Candidate qualifiers="Language-{loc.upper()}" type="String"><Value>a-{loc}</Value></Candidate>'
+            for loc in all_35[:17]
+        )
+        second_half = "".join(
+            f'<Candidate qualifiers="Language-{loc.upper()}" type="String"><Value>b-{loc}</Value></Candidate>'
+            for loc in all_35[17:]
+        )
+        base_xml_for_split = _build_pri_xml(all_35, use_qualifier_sets=False)
+        mut_split_xml = re.sub(
+            r'<NamedResource name="appTagline">.*?</NamedResource>',
+            f'<NamedResource name="Other/appTagline">{first_half}</NamedResource>\n'
+            f'      <NamedResource name="Resources/appTagline">{second_half}</NamedResource>',
+            base_xml_for_split,
+            count=1,
+            flags=re.DOTALL,
+        )
+        assert mut_split_xml != base_xml_for_split
+        pri_multi_sub_split.write_text(mut_split_xml, encoding="utf-8")
+        expect_fail(
+            "case-39h-pri-multisub-split-incomplete",
+            lambda: verify_pri_dump(pri_multi_sub_split),
+            "18 != 35",
+        )
+
+        # Case 39i: Real Windows SDK MakePri.exe dump /dt detailed format places
+        # <QualifierSet index="..."><Qualifier name="..." value="..." .../></QualifierSet>
+        # directly inside <Candidate>. Verify both valid (PASS) and missing-UNPLATED (FAIL).
+        pri_detailed_ok = tmp_dir / "pri_39i_detailed_nested_qset_ok.xml"
+        det_res_lines: list[str] = []
+        for key in REQUIRED_PRI_RESOURCE_KEYS:
+            cands = "".join(
+                f'<Candidate type="String"><QualifierSet index="{idx + 1}">'
+                f'<Qualifier name="Language" value="{loc.upper()}" priority="900" scoreAsDefault="1.0" index="1"/>'
+                f"</QualifierSet><Value>{key}-{loc}</Value></Candidate>"
+                for idx, loc in enumerate(all_35)
+            )
+            det_res_lines.append(f'      <NamedResource name="{key}">{cands}</NamedResource>')
+        det_file_lines: list[str] = []
+        for fname in REQUIRED_PRI_FILES:
+            if fname == "Square44x44Logo.png":
+                sq_cands = [
+                    f'<Candidate type="Path"><QualifierSet index="100"><Qualifier name="Scale" value="{sc}" priority="500" scoreAsDefault="0.0" index="1"/></QualifierSet>'
+                    f"<Value>Assets\\Square44x44Logo.scale-{sc}.png</Value></Candidate>"
+                    for sc in ("100", "125", "150", "200", "400")
+                ]
+                for alt in ("UNPLATED", "LIGHTUNPLATED"):
+                    for ts in REQUIRED_PRI_TARGET_SIZES:
+                        sq_cands.append(
+                            f'<Candidate type="Path"><QualifierSet index="200">'
+                            f'<Qualifier name="TargetSize" value="{ts}" priority="500" scoreAsDefault="0.0" index="1"/>'
+                            f'<Qualifier name="AlternateForm" value="{alt}" priority="500" scoreAsDefault="0.0" index="2"/>'
+                            f"</QualifierSet><Value>Assets\\Square44x44Logo.targetsize-{ts}_altform-{alt.lower()}.png</Value></Candidate>"
+                        )
+                det_file_lines.append(
+                    f'        <NamedResource name="{fname}">{"".join(sq_cands)}</NamedResource>'
+                )
+            else:
+                det_file_lines.append(
+                    f'        <NamedResource name="{fname}"><Candidate type="Path"><Value>{fname}</Value></Candidate></NamedResource>'
+                )
+        detailed_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            '<PriInfo><ResourceMap name="TotalDrop.TotalDrop">\n'
+            '  <ResourceMapSubtree name="Files">\n'
+            '    <ResourceMapSubtree name="Assets">\n'
+            + "\n".join(det_file_lines)
+            + "\n    </ResourceMapSubtree>\n  </ResourceMapSubtree>\n"
+            '  <ResourceMapSubtree name="Resources">\n'
+            + "\n".join(det_res_lines)
+            + "\n  </ResourceMapSubtree>\n</ResourceMap></PriInfo>\n"
+        )
+        pri_detailed_ok.write_text(detailed_xml, encoding="utf-8")
+        verify_pri_dump(pri_detailed_ok)
+
+        pri_detailed_bad = tmp_dir / "pri_39i_detailed_missing_unplated.xml"
+        pri_detailed_bad.write_text(
+            detailed_xml.replace('value="UNPLATED"', 'value="PLATED"'),
+            encoding="utf-8",
+        )
+        expect_fail(
+            "case-39i-pri-detailed-missing-unplated",
+            lambda: verify_pri_dump(pri_detailed_bad),
+            "AlternateForm=UNPLATED",
+        )
+
     print(
-        "self-test-bundle OK: 38/38 checks passed "
-        "(29/29 baseline + 9/9 hardened positive & negative bundle/msixupload/store-mode checks)."
+        "self-test-bundle OK: 47/47 checks passed "
+        "(29/29 baseline + 18/18 hardened positive & negative bundle/msixupload/store-mode/PRI checks)."
     )
     return 0
 

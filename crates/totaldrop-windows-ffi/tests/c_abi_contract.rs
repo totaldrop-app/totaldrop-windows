@@ -2389,3 +2389,58 @@ fn serde_json_errors_in_router_activity_format_message_and_validate_paths_are_bo
     assert_eq!(totaldrop_win_router_destroy(router), FFI_OK);
     Ok(())
 }
+
+#[test]
+fn tier5_validate_server_url_rejects_bidi_non_ascii_and_router_bounds_400k_ipc_frame() -> TestResult
+{
+    // C1-F1: FFI validate_server_url_json rejects Bidi / non-ASCII / control URLs.
+    let bad_urls = [
+        "wss://example.test/\u{202E}evil",
+        "wss://example.test/\u{2066}spoof",
+        "wss://example.test/\u{FDD0}bad",
+        "wss://example.test/\u{E0041}tag",
+        "wss://example.test\u{00A0}",
+        "wss://example.test/a\u{00A0}b",
+    ];
+    for raw in bad_urls {
+        let c_url = c_str(raw)?;
+        // SAFETY: `c_url` is a live NUL-terminated CString.
+        let val =
+            decode_and_free(unsafe { totaldrop_win_validate_server_url_json(c_url.as_ptr()) })?;
+        assert_strict_four_field_error(&val, "bad_server", Some("errorBadServer"))?;
+    }
+
+    // C1-F3: < 4 MiB Named Pipe frame with 400k short paths aborts bounded at item 10,001.
+    let en = c_str("en-US")?;
+    // SAFETY: `en` is a live NUL-terminated CString.
+    let router =
+        unsafe { totaldrop_win_router_create(19, en.as_ptr(), en.as_ptr(), ptr::null(), true) };
+    assert_ne!(router, 0);
+
+    let count = 400_000usize;
+    let mut big_json = String::with_capacity(count * 8 + 128);
+    big_json.push_str(r#"{"version":1,"payload":{"kind":"explorer_send","paths":["#);
+    for idx in 0..count {
+        if idx > 0 {
+            big_json.push(',');
+        }
+        big_json.push_str(r#""C:\\a""#);
+    }
+    big_json.push_str("]}}");
+    let frame = frame_raw_json(&big_json)?;
+
+    let started = std::time::Instant::now();
+    // SAFETY: `frame` is a live byte slice.
+    let res = decode_and_free(unsafe {
+        totaldrop_win_router_ingest_ipc_bytes_json(router, frame.as_ptr(), frame.len())
+    })?;
+    let elapsed = started.elapsed();
+
+    assert_strict_four_field_error(&res, "too_many_items", Some("errorStorage"))?;
+    assert!(
+        elapsed.as_secs() < 1,
+        "router_ingest on 400k-path frame must reject bounded under 1s (took {elapsed:?})"
+    );
+    assert_eq!(totaldrop_win_router_destroy(router), FFI_OK);
+    Ok(())
+}

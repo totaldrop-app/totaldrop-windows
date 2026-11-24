@@ -3,7 +3,6 @@
 
 using System.Runtime.InteropServices;
 using Microsoft.UI;
-using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -29,7 +28,6 @@ public sealed partial class SendPage : Page
 {
     private readonly UISettings _uiSettings = new();
     private readonly HashSet<TransferItemModel> _measuringDirectories = [];
-    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _pollTimer;
     private bool _koseAnimating;
     private ContentDialog? _activeCancelDialog;
 
@@ -49,10 +47,9 @@ public sealed partial class SendPage : Page
             ViewModel = vm;
             Bindings.Update();
             RefreshKoseAnimation();
-            if (ViewModel.ActiveSessionId != 0 && ViewModel.IsTransferRunning)
+            if (ViewModel.ActiveSessionId != 0)
             {
-                StartPolling();
-                PollSessionOnce();
+                ViewModel.SessionPollingRequested?.Invoke();
             }
 
             TriggerPendingDirectoryMeasurement();
@@ -63,7 +60,6 @@ public sealed partial class SendPage : Page
 
     public void ShutdownSession()
     {
-        StopPolling();
         DismissActiveDialog();
         ulong sid = ViewModel.ActiveSessionId;
         if (sid != 0)
@@ -86,7 +82,7 @@ public sealed partial class SendPage : Page
 
     private void OnPageUnloaded(object sender, RoutedEventArgs e)
     {
-        StopPolling();
+        // Active-session FFI polling is owned by MainWindow so tab switches never stall transfers.
         DismissActiveDialog();
     }
 
@@ -124,7 +120,17 @@ public sealed partial class SendPage : Page
             return;
         }
 
-        IReadOnlyList<IStorageItem> items = await e.DataView.GetStorageItemsAsync();
+        IReadOnlyList<IStorageItem> items;
+        try
+        {
+            items = await e.DataView.GetStorageItemsAsync();
+        }
+        catch (COMException)
+        {
+            // Ignore transient WinRT drag-and-drop shell COM failures.
+            return;
+        }
+
         List<string> rawPaths = new(items.Count);
         foreach (IStorageItem item in items)
         {
@@ -146,7 +152,17 @@ public sealed partial class SendPage : Page
         picker.FileTypeFilter.Add("*");
         InitializePickerWindow(picker);
 
-        IReadOnlyList<StorageFile> picked = await picker.PickMultipleFilesAsync();
+        IReadOnlyList<StorageFile> picked;
+        try
+        {
+            picked = await picker.PickMultipleFilesAsync();
+        }
+        catch (COMException)
+        {
+            // Ignore transient WinRT file picker COM failures.
+            return;
+        }
+
         if (picked is { Count: > 0 })
         {
             List<string> rawPaths = new(picked.Count);
@@ -171,7 +187,17 @@ public sealed partial class SendPage : Page
         picker.FileTypeFilter.Add("*");
         InitializePickerWindow(picker);
 
-        StorageFolder? folder = await picker.PickSingleFolderAsync();
+        StorageFolder? folder;
+        try
+        {
+            folder = await picker.PickSingleFolderAsync();
+        }
+        catch (COMException)
+        {
+            // Ignore transient WinRT folder picker COM failures.
+            return;
+        }
+
         if (folder is not null && !string.IsNullOrWhiteSpace(folder.Path))
         {
             if (ViewModel.TryAddRawPaths(new[] { folder.Path }))
@@ -268,7 +294,7 @@ public sealed partial class SendPage : Page
             }
 
             ViewModel.ActiveSessionId = sid;
-            StartPolling();
+            ViewModel.SessionPollingRequested?.Invoke();
             RefreshKoseAnimation();
         }
         catch (DllNotFoundException)
@@ -369,6 +395,10 @@ public sealed partial class SendPage : Page
                 CancelActiveSession();
             }
         }
+        catch (COMException)
+        {
+            // Ignore dialog cancellation when another modal or window close raced.
+        }
         finally
         {
             if (ReferenceEquals(_activeCancelDialog, dialog))
@@ -413,67 +443,8 @@ public sealed partial class SendPage : Page
         }
     }
 
-    private void StartPolling()
-    {
-        if (_pollTimer is null)
-        {
-            _pollTimer = DispatcherQueue.CreateTimer();
-            _pollTimer.Interval = TimeSpan.FromMilliseconds(80);
-            _pollTimer.Tick += OnPollTimerTick;
-        }
-
-        _pollTimer.Start();
-    }
-
-    private void StopPolling()
-    {
-        _pollTimer?.Stop();
-    }
-
-    private void OnPollTimerTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
-    {
-        PollSessionOnce();
-    }
-
-    private void PollSessionOnce()
-    {
-        RefreshKoseAnimation();
-        ulong sid = ViewModel.ActiveSessionId;
-        if (sid == 0)
-        {
-            StopPolling();
-            return;
-        }
-
-        try
-        {
-            if (!NativeBridge.TryPollSessionEvents(sid, out List<SessionEventDto> events, out _))
-            {
-                StopPolling();
-                return;
-            }
-
-            foreach (SessionEventDto ev in events)
-            {
-                ViewModel.ApplySessionEvent(ev);
-                if (ev.Event is "done" or "failed")
-                {
-                    DismissActiveDialog();
-                    DestroyCurrentSession();
-                    RefreshKoseAnimation();
-                    break;
-                }
-            }
-        }
-        catch (DllNotFoundException)
-        {
-            StopPolling();
-        }
-    }
-
     private void DestroyCurrentSession()
     {
-        StopPolling();
         ulong sid = ViewModel.ActiveSessionId;
         if (sid != 0)
         {
@@ -498,7 +469,7 @@ public sealed partial class SendPage : Page
         _activeCancelDialog = null;
     }
 
-    private void RefreshKoseAnimation()
+    public void RefreshKoseAnimation()
     {
         bool shouldAnimate = ViewModel.IsTransferRunning && _uiSettings.AnimationsEnabled;
         if (shouldAnimate && !_koseAnimating)

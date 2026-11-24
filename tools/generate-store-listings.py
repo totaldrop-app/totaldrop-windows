@@ -535,6 +535,9 @@ def inspect_png(path: Path, rel_label: str) -> tuple[dict[str, Any] | None, str 
 def _is_unsafe_screenshot_rel_path(rel_file: str) -> bool:
     return (
         rel_file != rel_file.strip()
+        or rel_file.startswith(CSV_FORMULA_PREFIXES)
+        or ";" in rel_file
+        or "," in rel_file
         or any(
             is_forbidden_char(ch, allow_newline=False) or ch in ("\u200C", "\u200D", "\u200E", "\u200F")
             for ch in rel_file
@@ -549,6 +552,7 @@ def _is_unsafe_screenshot_rel_path(rel_file: str) -> bool:
             or part != part.strip()
             or part.startswith(".")
             or part.endswith(".")
+            or part.startswith(CSV_FORMULA_PREFIXES)
             for part in rel_file.split("/")
         )
     )
@@ -843,15 +847,19 @@ def _check_text_hygiene(
                 f"locale {locale} {field}: leaks forbidden non-Windows ARB string from key {fk!r}"
             )
 
-    first_non_nl = text.lstrip("\n") if allow_newline else text
-    if text and (
-        text[0] in CSV_FORMULA_PREFIXES
-        or (first_non_nl and first_non_nl[0] in CSV_FORMULA_PREFIXES)
-    ):
-        bad_prefix = text[0] if text[0] in CSV_FORMULA_PREFIXES else first_non_nl[0]
+    stripped_leading = text.lstrip()
+    if stripped_leading and stripped_leading[0] in CSV_FORMULA_PREFIXES:
         errors.append(
-            f"locale {locale} {field}: starts with spreadsheet formula-injection prefix {bad_prefix!r}"
+            f"locale {locale} {field}: starts with spreadsheet formula-injection prefix {stripped_leading[0]!r}"
         )
+    elif allow_newline:
+        for line in text.splitlines():
+            line_stripped = line.lstrip(" \t")
+            if line_stripped and line_stripped[0] in CSV_FORMULA_PREFIXES:
+                errors.append(
+                    f"locale {locale} {field}: line starts with spreadsheet formula-injection prefix {line_stripped[0]!r}"
+                )
+                break
 
 
 def validate_document(

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The TotalDrop Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -19,12 +20,14 @@ namespace TotalDrop.WinUI.Views;
 public sealed partial class SettingsPage : Page
 {
     private bool _suppressPrivacyToggle;
+    private ContentDialog? _activePrivacyDialog;
 
     public SettingsViewModel ViewModel { get; private set; } = new();
 
     public SettingsPage()
     {
         InitializeComponent();
+        Unloaded += OnPageUnloaded;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -36,6 +39,17 @@ public sealed partial class SettingsPage : Page
             Bindings.Update();
             SyncPrivacyToggleFromViewModel();
         }
+    }
+
+    public void DismissPrivacyDialog()
+    {
+        _activePrivacyDialog?.Hide();
+        _activePrivacyDialog = null;
+    }
+
+    private void OnPageUnloaded(object sender, RoutedEventArgs e)
+    {
+        DismissPrivacyDialog();
     }
 
     private void SyncPrivacyToggleFromViewModel()
@@ -97,6 +111,12 @@ public sealed partial class SettingsPage : Page
             return;
         }
 
+        if (_activePrivacyDialog is not null)
+        {
+            SyncPrivacyToggleFromViewModel();
+            return;
+        }
+
         bool requestedOn = PrivacyModeToggle.IsOn;
         if (!requestedOn)
         {
@@ -129,18 +149,33 @@ public sealed partial class SettingsPage : Page
             CloseButtonText = ViewModel.Strings.Cancel,
             DefaultButton = ContentDialogButton.Close,
         };
-
-        ContentDialogResult result = await dialog.ShowAsync();
-        if (result == ContentDialogResult.Primary)
+        _activePrivacyDialog = dialog;
+        try
         {
-            if (!ViewModel.TrySetPrivacyMode(true))
+            ContentDialogResult result = await dialog.ShowAsync();
+            if (result == ContentDialogResult.Primary)
+            {
+                if (!ViewModel.TrySetPrivacyMode(true))
+                {
+                    SyncPrivacyToggleFromViewModel();
+                }
+            }
+            else
             {
                 SyncPrivacyToggleFromViewModel();
             }
         }
-        else
+        catch (COMException)
         {
+            // Ignore dialog cancellation when another modal or window close raced.
             SyncPrivacyToggleFromViewModel();
+        }
+        finally
+        {
+            if (ReferenceEquals(_activePrivacyDialog, dialog))
+            {
+                _activePrivacyDialog = null;
+            }
         }
     }
 }
