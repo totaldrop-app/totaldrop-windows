@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -33,7 +34,12 @@ namespace TotalDrop.WinUI.Interop;
 [JsonSerializable(typeof(BridgeNetworkConfigDto))]
 [JsonSerializable(typeof(AppSettingsFileDto))]
 [JsonSerializable(typeof(SessionEventDto))]
-[JsonSerializable(typeof(ActivationEnvelopeDto))]
+[JsonSerializable(typeof(RouterDecisionDto))]
+[JsonSerializable(typeof(RouterDecisionDto[]))]
+[JsonSerializable(typeof(MarkAnimationStateDto))]
+[JsonSerializable(typeof(UiBundleReadyMessageDto))]
+[JsonSerializable(typeof(MarkAnimationMessageDto))]
+[JsonSerializable(typeof(WindowsActivityStateDto))]
 public sealed partial class TotalDropJsonContext : JsonSerializerContext;
 
 /// <summary>
@@ -301,22 +307,69 @@ public sealed record SessionEventDto(
     string? TechnicalEnglish = null);
 
 /// <summary>
-/// DTO mirror of <c>totaldrop_windows_bridge::activation::ActivationEnvelope</c>.
+/// Flat Native AOT DTO for <c>totaldrop_windows_bridge::ipc_router::RouterDecision</c>
+/// (<c>#[serde(tag = "decision", rename_all = "snake_case")]</c>).
 /// </summary>
-public sealed record ActivationEnvelopeDto(
-    uint Version,
-    uint? InitiatorPid,
-    ActivationPayloadDto Payload);
+public sealed record RouterDecisionDto(
+    string Decision,
+    string[]? Paths = null,
+    string? RawText = null,
+    SanitizedPeerTextDto? SanitizedPreview = null,
+    ValidatedCodeDto? Code = null,
+    string? Screen = null,
+    string? LocalizedBanner = null,
+    uint? InitiatorPid = null);
 
 /// <summary>
-/// DTO mirror of <c>totaldrop_windows_bridge::activation::ActivationPayload</c>.
+/// DTO for Kose mark animation state emitted by <c>WinUiBridgeMessage::MarkAnimationState</c>.
 /// </summary>
-public sealed record ActivationPayloadDto(
+public sealed record MarkAnimationStateDto(
+    bool Animate,
+    string HexLight,
+    string HexDark,
+    uint CycleMs);
+
+/// <summary>
+/// Adjacently-tagged <c>WinUiBridgeMessage::UiBundleReady</c> envelope.
+/// </summary>
+public sealed record UiBundleReadyMessageDto(
     string Kind,
-    string[]? Paths,
-    ValidatedCodeDto? Code,
-    string? Text,
-    string? Screen);
+    BridgeUiBundleDto? Data);
+
+/// <summary>
+/// Adjacently-tagged <c>WinUiBridgeMessage::MarkAnimationState</c> envelope.
+/// </summary>
+public sealed record MarkAnimationMessageDto(
+    string Kind,
+    MarkAnimationStateDto? Data);
+
+/// <summary>
+/// Mirrors <c>totaldrop_windows_bridge::ipc_router::WindowsActivityState</c>
+/// (<c>#[serde(tag = "state", rename_all = "snake_case")]</c>).
+/// </summary>
+public sealed record WindowsActivityStateDto(
+    string State,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Code = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ulong? DoneBytes = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ulong? TotalBytes = null)
+{
+    public static WindowsActivityStateDto Idle { get; } = new("idle");
+
+    public static WindowsActivityStateDto PreparingSend { get; } = new("preparing_send");
+
+    public static WindowsActivityStateDto WaitingForPeer(string code) =>
+        new("waiting_for_peer", Code: code ?? string.Empty);
+
+    public static WindowsActivityStateDto ConnectingReceive(string code) =>
+        new("connecting_receive", Code: code ?? string.Empty);
+
+    public static WindowsActivityStateDto OfferPromptPending { get; } = new("offer_prompt_pending");
+
+    public static WindowsActivityStateDto Transferring(ulong doneBytes, ulong totalBytes) =>
+        new("transferring", DoneBytes: doneBytes, TotalBytes: totalBytes);
+
+    public static WindowsActivityStateDto ShowingTextNote { get; } = new("showing_text_note");
+}
 
 /// <summary>
 /// Reflection-free placeholder argument for <see cref="NativeBridge.TryFormatMessage"/>.
@@ -372,22 +425,8 @@ public static partial class NativeBridge
 
     private static readonly Guid FolderIdDownloads = new("374DE290-123F-4565-9164-39C4925E467B");
 
-    [Flags]
-    public enum ExecutionState : uint
-    {
-        SystemRequired = 0x0000_0001,
-        Continuous = 0x8000_0000,
-    }
-
     // -----------------------------------------------------------------------
     // Win32 System P/Invokes
-
-    /// <summary>
-    /// Prevents Windows from entering sleep while an active transfer is running
-    /// (ADR 0016, #340), releasing the request immediately when finished.
-    /// </summary>
-    [LibraryImport("kernel32.dll", SetLastError = false)]
-    public static partial ExecutionState SetThreadExecutionState(ExecutionState esFlags);
 
     /// <summary>
     /// Retrieves the Windows Terminal Services session ID of the current process
@@ -531,6 +570,37 @@ public static partial class NativeBridge
 
     [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_shutdown")]
     public static partial int Shutdown(uint timeoutMs);
+
+    // -----------------------------------------------------------------------
+    // Phase 3 C ABI Exports (7 single-window IPC router symbols -> 31 cumulative)
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_router_create", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial ulong RouterCreate(
+        uint sessionId,
+        string langTags,
+        string regionTag,
+        string appVersion,
+        [MarshalAs(UnmanagedType.U1)] bool animationsEnabled);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_router_ingest_ipc_bytes_json")]
+    public static unsafe partial nint RouterIngestIpcBytesJson(ulong routerId, byte* ptr, nuint len);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_router_update_locale_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint RouterUpdateLocaleJson(ulong routerId, string langTags, string regionTag);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_router_set_animations_json")]
+    public static partial nint RouterSetAnimationsJson(
+        ulong routerId,
+        [MarshalAs(UnmanagedType.U1)] bool enabled);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_router_set_activity_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint RouterSetActivityJson(ulong routerId, string activityJson);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_router_drain_ndjson")]
+    public static partial nint RouterDrainNdjson(ulong routerId);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_router_destroy")]
+    public static partial int RouterDestroy(ulong routerId);
 
     // -----------------------------------------------------------------------
     // Managed Wrappers (Zero Reflection, NUL-Guarded)
@@ -1178,5 +1248,306 @@ public static partial class NativeBridge
 
         ulong pct = (ulong)(((UInt128)done * 100) / total);
         return (int)Math.Min(pct, 99UL);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3 Managed Router Wrappers & Reflection-Free Outgoing Frame Builders
+
+    public static ulong TryCreateRouter(
+        uint sessionId,
+        string langTags,
+        string regionTag,
+        string appVersion,
+        bool animationsEnabled) =>
+        RouterCreate(
+            sessionId,
+            StripNul(langTags),
+            StripNul(regionTag),
+            StripNul(appVersion),
+            animationsEnabled);
+
+    /// <summary>
+    /// Feeds raw Named Pipe bytes directly into Rust <c>IpcFrameDecoder</c> and
+    /// <c>WinUiWindowRouter</c>. Passing <see cref="ReadOnlySpan{T}.Empty"/>
+    /// signals stream EOF / frame-boundary validation (<c>len == 0</c>).
+    /// </summary>
+    public static unsafe bool TryIngestRouterIpcBytes(
+        ulong routerId,
+        ReadOnlySpan<byte> chunk,
+        out RouterDecisionDto[] decisions,
+        out BridgeErrorDto? error)
+    {
+        decisions = [];
+        error = null;
+
+        nint rawPtr;
+        fixed (byte* p = chunk)
+        {
+            rawPtr = RouterIngestIpcBytesJson(routerId, p, (nuint)chunk.Length);
+        }
+
+        string? json = TakeJsonString(rawPtr);
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
+        {
+            return false;
+        }
+
+        try
+        {
+            RouterDecisionDto[]? parsed = JsonSerializer.Deserialize(
+                json,
+                TotalDropJsonContext.Default.RouterDecisionDtoArray);
+            if (parsed is not null)
+            {
+                decisions = parsed;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    public static bool TryUpdateRouterLocale(
+        ulong routerId,
+        string langTags,
+        string regionTag,
+        out BridgeUiBundleDto? bundle,
+        out BridgeErrorDto? error)
+    {
+        bundle = null;
+        error = null;
+
+        string? json = TakeJsonString(RouterUpdateLocaleJson(routerId, StripNul(langTags), StripNul(regionTag)));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
+        {
+            return false;
+        }
+
+        try
+        {
+            UiBundleReadyMessageDto? msg = JsonSerializer.Deserialize(
+                json,
+                TotalDropJsonContext.Default.UiBundleReadyMessageDto);
+            if (msg is { Kind: "ui_bundle_ready", Data: not null })
+            {
+                bundle = msg.Data;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    public static bool TrySetRouterAnimations(
+        ulong routerId,
+        bool enabled,
+        out MarkAnimationStateDto? mark,
+        out BridgeErrorDto? error)
+    {
+        mark = null;
+        error = null;
+
+        string? json = TakeJsonString(RouterSetAnimationsJson(routerId, enabled));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
+        {
+            return false;
+        }
+
+        return TryParseMarkAnimationMessage(json, out mark);
+    }
+
+    public static bool TrySetRouterActivity(
+        ulong routerId,
+        WindowsActivityStateDto activity,
+        out MarkAnimationStateDto? mark,
+        out BridgeErrorDto? error)
+    {
+        mark = null;
+        error = null;
+
+        string activityJson = JsonSerializer.Serialize(
+            activity,
+            TotalDropJsonContext.Default.WindowsActivityStateDto);
+        string? json = TakeJsonString(RouterSetActivityJson(routerId, StripNul(activityJson)));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
+        {
+            return false;
+        }
+
+        return TryParseMarkAnimationMessage(json, out mark);
+    }
+
+    public static bool TryDrainRouterNdjson(
+        ulong routerId,
+        out string ndjson,
+        out BridgeErrorDto? error)
+    {
+        ndjson = string.Empty;
+        error = null;
+
+        string? raw = TakeJsonString(RouterDrainNdjson(routerId));
+        if (raw is null)
+        {
+            return false;
+        }
+
+        if (raw.Length == 0)
+        {
+            return true;
+        }
+
+        if (TryExtractError(raw, out error))
+        {
+            return false;
+        }
+
+        ndjson = raw;
+        return true;
+    }
+
+    public static int TryDestroyRouter(ulong routerId) =>
+        routerId == 0 ? FfiErrInvalidHandle : RouterDestroy(routerId);
+
+    /// <summary>
+    /// Encodes a schema-v1 <c>explorer_send</c> envelope with 4-byte LE length
+    /// prefix using reflection-free <see cref="Utf8JsonWriter"/>.
+    /// </summary>
+    public static byte[] BuildFramedExplorerSendEnvelope(
+        IReadOnlyList<string> rawPaths,
+        uint? initiatorPid = null) =>
+        EncodeFramedEnvelope(initiatorPid, writer =>
+        {
+            writer.WriteString("kind", "explorer_send");
+            writer.WriteStartArray("paths");
+            foreach (string path in rawPaths)
+            {
+                writer.WriteStringValue(path ?? string.Empty);
+            }
+
+            writer.WriteEndArray();
+        });
+
+    /// <summary>
+    /// Encodes a schema-v1 <c>share_target</c> envelope with 4-byte LE length
+    /// prefix using reflection-free <see cref="Utf8JsonWriter"/>.
+    /// </summary>
+    public static byte[] BuildFramedShareTargetEnvelope(
+        IReadOnlyList<string>? rawPaths,
+        string? text,
+        uint? initiatorPid = null) =>
+        EncodeFramedEnvelope(initiatorPid, writer =>
+        {
+            writer.WriteString("kind", "share_target");
+            writer.WriteStartArray("paths");
+            if (rawPaths is not null)
+            {
+                foreach (string path in rawPaths)
+                {
+                    writer.WriteStringValue(path ?? string.Empty);
+                }
+            }
+
+            writer.WriteEndArray();
+            if (text is null)
+            {
+                writer.WriteNull("text");
+            }
+            else
+            {
+                writer.WriteString("text", text);
+            }
+        });
+
+    /// <summary>
+    /// Encodes a schema-v1 <c>protocol_uri</c> envelope with 4-byte LE length
+    /// prefix using reflection-free <see cref="Utf8JsonWriter"/>.
+    /// </summary>
+    public static byte[] BuildFramedProtocolUriEnvelope(
+        ValidatedCodeDto code,
+        uint? initiatorPid = null) =>
+        EncodeFramedEnvelope(initiatorPid, writer =>
+        {
+            writer.WriteString("kind", "protocol_uri");
+            writer.WriteStartObject("code");
+            writer.WriteNumber("nameplate", code.Nameplate);
+            writer.WriteNumber("word_count", code.WordCount);
+            writer.WriteString("display_english", code.DisplayEnglish);
+            writer.WriteString("canonical", code.Canonical);
+            writer.WriteString("ltr_isolated", code.LtrIsolated);
+            writer.WriteString("protocol_uri", code.ProtocolUri);
+            writer.WriteString("web_uri", code.WebUri);
+            writer.WriteEndObject();
+        });
+
+    /// <summary>
+    /// Encodes a schema-v1 <c>open_screen</c> envelope with 4-byte LE length
+    /// prefix using reflection-free <see cref="Utf8JsonWriter"/>.
+    /// </summary>
+    public static byte[] BuildFramedOpenScreenEnvelope(
+        string screen,
+        uint? initiatorPid = null) =>
+        EncodeFramedEnvelope(initiatorPid, writer =>
+        {
+            writer.WriteString("kind", "open_screen");
+            writer.WriteString("screen", screen);
+        });
+
+    private static bool TryParseMarkAnimationMessage(string json, out MarkAnimationStateDto? mark)
+    {
+        mark = null;
+        try
+        {
+            MarkAnimationMessageDto? msg = JsonSerializer.Deserialize(
+                json,
+                TotalDropJsonContext.Default.MarkAnimationMessageDto);
+            if (msg is { Kind: "mark_animation_state", Data: not null })
+            {
+                mark = msg.Data;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static byte[] EncodeFramedEnvelope(uint? initiatorPid, Action<Utf8JsonWriter> writePayload)
+    {
+        ArrayBufferWriter<byte> payloadBuffer = new(256);
+        using (Utf8JsonWriter writer = new(payloadBuffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("version", 1);
+            if (initiatorPid.HasValue)
+            {
+                writer.WriteNumber("initiator_pid", initiatorPid.Value);
+            }
+            else
+            {
+                writer.WriteNull("initiator_pid");
+            }
+
+            writer.WriteStartObject("payload");
+            writePayload(writer);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        }
+
+        ReadOnlySpan<byte> payloadSpan = payloadBuffer.WrittenSpan;
+        byte[] framed = new byte[4 + payloadSpan.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(framed.AsSpan(0, 4), (uint)payloadSpan.Length);
+        payloadSpan.CopyTo(framed.AsSpan(4));
+        return framed;
     }
 }

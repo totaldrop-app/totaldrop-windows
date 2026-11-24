@@ -112,8 +112,9 @@ $X64Msix = Join-Path $ResolvedOutDir "TotalDrop_${Version}_x64.msix"
 $OutBundleName = "TotalDrop_${Version}_x64_arm64.msixbundle"
 $OutBundle = Join-Path $ResolvedOutDir $OutBundleName
 $FfiDll = Join-Path $RepoRoot "target\aarch64-pc-windows-msvc\release\totaldrop_windows_ffi.dll"
+$ExplorerExtDll = Join-Path $RepoRoot "target\aarch64-pc-windows-msvc\release\totaldrop_explorer_ext.dll"
 
-Write-Host "==> [arm64 1/5] Building Rust totaldrop-windows-ffi cdylib (aarch64-pc-windows-msvc)..."
+Write-Host "==> [arm64 1/5] Building Rust totaldrop-windows-ffi & totaldrop-explorer-ext cdylibs (aarch64-pc-windows-msvc)..."
 $SavedRustFlags = $env:RUSTFLAGS
 $SavedEncodedRustFlags = $env:CARGO_ENCODED_RUSTFLAGS
 Push-Location $RepoRoot
@@ -124,10 +125,11 @@ try {
         --config (Join-Path $ScriptDir "cargo-config.toml") `
         --target aarch64-pc-windows-msvc `
         -p totaldrop-windows-ffi `
+        -p totaldrop-explorer-ext `
         --release `
         --locked
     if ($LASTEXITCODE -ne 0) {
-        throw "cargo build (totaldrop-windows-ffi, aarch64-pc-windows-msvc) failed with exit code $LASTEXITCODE"
+        throw "cargo build (totaldrop-windows-ffi / totaldrop-explorer-ext, aarch64-pc-windows-msvc) failed with exit code $LASTEXITCODE"
     }
 }
 finally {
@@ -142,6 +144,9 @@ finally {
 
 if (-not (Test-Path -LiteralPath $FfiDll)) {
     throw "Expected native FFI DLL missing at $FfiDll"
+}
+if (-not (Test-Path -LiteralPath $ExplorerExtDll)) {
+    throw "Expected native Explorer COM DLL missing at $ExplorerExtDll"
 }
 
 Write-Host "==> [arm64 2/5] Publishing WinUI 3 shell with .NET 10 LTS Native AOT (win-arm64)..."
@@ -189,12 +194,14 @@ if (Test-Path -LiteralPath $PriWorkDir) {
 New-Item -ItemType Directory -Force -Path $StagingDir, $PriWorkDir | Out-Null
 
 Copy-Item -Path (Join-Path $PublishDir "*") -Destination $StagingDir -Recurse -Force
+Copy-Item -LiteralPath $ExplorerExtDll -Destination (Join-Path $StagingDir "totaldrop_explorer_ext.dll") -Force
 Get-ChildItem -LiteralPath $StagingDir -Include "*.pdb", "*.pri" -Recurse -File -ErrorAction SilentlyContinue |
     Remove-Item -Force
 
 foreach ($requiredRel in @(
     "totaldrop-winui.exe",
     "totaldrop_windows_ffi.dll",
+    "totaldrop_explorer_ext.dll",
     "App.xbf",
     "MainWindow.xbf",
     "Views\SendPage.xbf",

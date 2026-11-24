@@ -212,10 +212,14 @@ impl IpcFrameDecoder {
                 chunk = rest;
 
                 if self.payload_buf.len() == target_len {
+                    const MAX_RETAINED_IPC_BUF_BYTES: usize = 64 * 1024;
                     let parsed = ActivationEnvelope::from_json_bytes(&self.payload_buf);
                     self.header_buf = [0u8; 4];
                     self.header_filled = 0;
                     self.payload_buf.clear();
+                    if self.payload_buf.capacity() > MAX_RETAINED_IPC_BUF_BYTES {
+                        self.payload_buf.shrink_to_fit();
+                    }
                     self.expected_payload_len = None;
 
                     match parsed {
@@ -643,6 +647,17 @@ impl WinUiWindowRouter {
         Ok(decisions)
     }
 
+    /// Validates clean stream termination when a Named Pipe client disconnects
+    /// (e.g., 0-byte read / EOF), resetting the decoder on truncated frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActivationError::MalformedIpcFrame`] if the peer disconnected
+    /// mid-header or mid-payload.
+    pub fn finish_ipc_eof(&mut self) -> Result<(), ActivationError> {
+        self.decoder.finish_eof()
+    }
+
     /// Projects a [`totaldrop_core::Event`] using regional formatting rules
     /// (`#483`), updating [`Self::activity`] and queueing the resulting
     /// [`WinUiBridgeMessage`] snapshots.
@@ -719,5 +734,30 @@ impl WinUiWindowRouter {
         let encoded = encode_ndjson_batch(&self.outbox)?;
         self.outbox.clear();
         Ok(encoded)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipc_frame_decoder_shrinks_oversized_buffer_after_valid_large_frame()
+    -> Result<(), ActivationError> {
+        let mut decoder = IpcFrameDecoder::new();
+        let big_text = "x".repeat(128 * 1024);
+        let envelope =
+            ActivationEnvelope::share_target(std::iter::empty::<&str>(), Some(big_text), None)?;
+        let frame = envelope.encode_ipc_frame()?;
+        assert!(frame.len() > 128 * 1024);
+
+        let decoded = decoder.push_bytes(&frame)?;
+        assert_eq!(decoded.len(), 1);
+        assert!(
+            decoder.payload_buf.capacity() <= 64 * 1024,
+            "expected oversized payload_buf capacity to shrink after large frame, got {}",
+            decoder.payload_buf.capacity()
+        );
+        Ok(())
     }
 }

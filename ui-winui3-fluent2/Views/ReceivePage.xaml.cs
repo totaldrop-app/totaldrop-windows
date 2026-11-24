@@ -570,6 +570,8 @@ public sealed partial class ReceivePage : Page
         }
     }
 
+    public void DismissCancelDialog() => DismissActiveDialog();
+
     private void DismissActiveDialog()
     {
         _activeCancelDialog?.Hide();

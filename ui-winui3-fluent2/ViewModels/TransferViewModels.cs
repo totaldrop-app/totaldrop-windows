@@ -3,6 +3,7 @@
 
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.UI.Xaml;
@@ -42,7 +43,7 @@ public abstract class ObservableViewModel : INotifyPropertyChanged
 /// English UI copy exists in C# or XAML.
 /// </summary>
 [GeneratedBindableCustomProperty]
-public sealed partial class UiStringsViewModel : ObservableViewModel
+public sealed partial class UiStringsViewModel : ObservableViewModel, INotificationLocalizer
 {
     private string _languageTag = string.Empty;
     private string _regionTag = string.Empty;
@@ -433,6 +434,54 @@ public sealed partial class UiStringsViewModel : ObservableViewModel
         byte whole = (byte)NativeBridge.ComputeWholePercentFloor(doneBytes, totalBytes);
         return new RegionalPercentDto(whole, string.Empty);
     }
+
+    public string SanitizeFilename(string rawFilename)
+    {
+        if (string.IsNullOrEmpty(rawFilename))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            SanitizedFilenameDto? dto = NativeBridge.TrySanitizeFilename(rawFilename);
+            if (dto is not null)
+            {
+                return dto.Sanitized;
+            }
+        }
+        catch (DllNotFoundException)
+        {
+            // Design-time preview fallback below.
+        }
+
+        StringBuilder sb = new(rawFilename.Length + 2);
+        sb.Append('\u2068');
+        foreach (Rune rune in rawFilename.EnumerateRunes())
+        {
+            int cp = rune.Value;
+            UnicodeCategory cat = Rune.GetUnicodeCategory(rune);
+            bool isControlOrBidi = cp is not (0x200C or 0x200D)
+                && (cat is UnicodeCategory.Control
+                    or UnicodeCategory.Format
+                    or UnicodeCategory.LineSeparator
+                    or UnicodeCategory.ParagraphSeparator
+                    || (cp >= 0xFDD0 && cp <= 0xFDEF)
+                    || (cp & 0xFFFE) == 0xFFFE
+                    || (cp >= 0xE0000 && cp <= 0xE007F));
+            if (isControlOrBidi)
+            {
+                sb.Append($"<U+{cp:X4}>");
+            }
+            else
+            {
+                sb.Append(rune.ToString());
+            }
+        }
+
+        sb.Append('\u2069');
+        return sb.ToString();
+    }
 }
 
 /// <summary>
@@ -566,7 +615,26 @@ public sealed partial class SendViewModel : ObservableViewModel
 
     public Action<bool, bool>? BrandMarkStateChanged { get; set; }
 
+    public Action? TransferLifecycleChanged { get; set; }
+
+    public Action<NotificationEventInput>? BackgroundNotificationReady { get; set; }
+
     public ulong ActiveSessionId { get; set; }
+
+    public ulong DoneBytes { get; private set; }
+
+    public ulong TotalBytes { get; private set; }
+
+    public TransferLifecycleStage ToLifecycleStage() => _phase switch
+    {
+        SendPhase.Preparing => TransferLifecycleStage.Preparing,
+        SendPhase.Waiting => TransferLifecycleStage.Waiting,
+        SendPhase.Connected => TransferLifecycleStage.Connected,
+        SendPhase.Transferring => TransferLifecycleStage.Transferring,
+        SendPhase.Done => TransferLifecycleStage.Done,
+        SendPhase.Failed => TransferLifecycleStage.Failed,
+        _ => TransferLifecycleStage.Idle,
+    };
 
     public SendInputMode Mode
     {
@@ -589,6 +657,7 @@ public sealed partial class SendViewModel : ObservableViewModel
             {
                 NotifyPhaseProperties();
                 BrandMarkStateChanged?.Invoke(IsTransferRunning, value == SendPhase.Done);
+                TransferLifecycleChanged?.Invoke();
             }
         }
     }
@@ -1150,6 +1219,8 @@ public sealed partial class SendViewModel : ObservableViewModel
         ShareText = string.Empty;
         CopiedFeedbackVisible = false;
         VerificationWords = string.Empty;
+        DoneBytes = 0;
+        TotalBytes = 0;
         WholePercent = 0;
         RegionalPercentText = Strings.FormatPercent(0, 0).Formatted;
         FormattedProgressBytes = string.Empty;
@@ -1174,6 +1245,8 @@ public sealed partial class SendViewModel : ObservableViewModel
                     TransferWebUri = ev.Code.WebUri;
                 }
 
+                DoneBytes = 0;
+                TotalBytes = ev.TotalBytes ?? 0;
                 ShareText = ev.ShareText ?? string.Empty;
                 StatusCaption = Strings.SendWaiting;
                 Phase = SendPhase.Waiting;
@@ -1191,6 +1264,16 @@ public sealed partial class SendViewModel : ObservableViewModel
                 break;
 
             case "progress":
+                if (ev.DoneBytes.HasValue)
+                {
+                    DoneBytes = ev.DoneBytes.Value;
+                }
+
+                if (ev.TotalBytes.HasValue)
+                {
+                    TotalBytes = ev.TotalBytes.Value;
+                }
+
                 if (ev.Percent is not null)
                 {
                     WholePercent = ev.Percent.Whole;
@@ -1207,19 +1290,20 @@ public sealed partial class SendViewModel : ObservableViewModel
             case "done":
                 WholePercent = 100;
                 RegionalPercentText = Strings.FormatPercent(1, 1).Formatted;
+                bool isTextSend = ev.IsText == true;
+                ulong sendOkCount = ev.FilesOk ?? 1;
+                ulong sendFailedCount = ev.FilesFailed ?? 0;
                 ResultTitle = Strings.SendDone;
-                if (ev.IsText == true)
+                if (isTextSend)
                 {
-                    ResultBody = Strings.SendTextDone;
+                    ResultBody = sendFailedCount > 0 ? Strings.ErrorTextDamaged : Strings.SendTextDone;
                 }
                 else
                 {
-                    ulong okCount = ev.FilesOk ?? 1;
-                    string doneBody = Strings.FormatMessage("sendDoneBody", MessageArg.FromCount("count", okCount));
-                    ulong failedCount = ev.FilesFailed ?? 0;
-                    if (failedCount > 0)
+                    string doneBody = Strings.FormatMessage("sendDoneBody", MessageArg.FromCount("count", sendOkCount));
+                    if (sendFailedCount > 0)
                     {
-                        string failPart = Strings.FormatMessage("sendSomeFailed", MessageArg.FromCount("count", failedCount));
+                        string failPart = Strings.FormatMessage("sendSomeFailed", MessageArg.FromCount("count", sendFailedCount));
                         doneBody = $"{doneBody} {failPart}";
                     }
 
@@ -1227,6 +1311,15 @@ public sealed partial class SendViewModel : ObservableViewModel
                 }
 
                 Phase = SendPhase.Done;
+                BackgroundNotificationReady?.Invoke(new NotificationEventInput(
+                    Role: TransferRole.Send,
+                    Stage: TransferLifecycleStage.Done,
+                    WindowActive: false,
+                    IsText: isTextSend,
+                    FilesOk: sendOkCount,
+                    FilesFailed: sendFailedCount,
+                    ByteCount: ev.Bytes ?? TotalBytes,
+                    FormattedBytes: ev.FormattedBytes));
                 break;
 
             case "failed":
@@ -1235,6 +1328,13 @@ public sealed partial class SendViewModel : ObservableViewModel
                 ErrorTechnicalEnglish = ev.TechnicalEnglish ?? string.Empty;
                 ShowErrorDetails = false;
                 Phase = SendPhase.Failed;
+                BackgroundNotificationReady?.Invoke(new NotificationEventInput(
+                    Role: TransferRole.Send,
+                    Stage: TransferLifecycleStage.Failed,
+                    WindowActive: false,
+                    IsText: Mode == SendInputMode.Text,
+                    ErrorL10nKey: ev.L10nKey,
+                    LocalizedErrorSummary: ErrorSummary));
                 break;
         }
     }
@@ -1253,6 +1353,8 @@ public sealed partial class SendViewModel : ObservableViewModel
         ShareText = string.Empty;
         CopiedFeedbackVisible = false;
         VerificationWords = string.Empty;
+        DoneBytes = 0;
+        TotalBytes = 0;
         WholePercent = 0;
         RegionalPercentText = Strings.FormatPercent(0, 0).Formatted;
         FormattedProgressBytes = string.Empty;
@@ -1342,7 +1444,26 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
 
     public Action<bool, bool>? BrandMarkStateChanged { get; set; }
 
+    public Action? TransferLifecycleChanged { get; set; }
+
+    public Action<NotificationEventInput>? BackgroundNotificationReady { get; set; }
+
     public ulong ActiveSessionId { get; set; }
+
+    public ulong DoneBytes { get; private set; }
+
+    public ulong TotalBytes { get; private set; }
+
+    public TransferLifecycleStage ToLifecycleStage() => _phase switch
+    {
+        ReceivePhase.Connecting => TransferLifecycleStage.Connecting,
+        ReceivePhase.Offer => TransferLifecycleStage.Offer,
+        ReceivePhase.Transferring => TransferLifecycleStage.Transferring,
+        ReceivePhase.Done => TransferLifecycleStage.Done,
+        ReceivePhase.Declined => TransferLifecycleStage.Declined,
+        ReceivePhase.Failed => TransferLifecycleStage.Failed,
+        _ => TransferLifecycleStage.Idle,
+    };
 
     public ReceivePhase Phase
     {
@@ -1353,6 +1474,7 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
             {
                 NotifyPhaseProperties();
                 BrandMarkStateChanged?.Invoke(IsTransferRunning, value == ReceivePhase.Done);
+                TransferLifecycleChanged?.Invoke();
             }
         }
     }
@@ -1497,6 +1619,7 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
             if (SetField(ref _displayReceivedText, value))
             {
                 NotifyChanged(nameof(IsReceivedTextVisible));
+                TransferLifecycleChanged?.Invoke();
             }
         }
     }
@@ -1629,6 +1752,8 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
         OfferSummary = string.Empty;
         OfferMoreText = string.Empty;
         VerificationWords = string.Empty;
+        DoneBytes = 0;
+        TotalBytes = 0;
         WholePercent = 0;
         RegionalPercentText = Strings.FormatPercent(0, 0).Formatted;
         FormattedProgressBytes = string.Empty;
@@ -1649,6 +1774,7 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
 
     public void BeginTransferring()
     {
+        DoneBytes = 0;
         WholePercent = 0;
         RegionalPercentText = Strings.FormatPercent(0, 0).Formatted;
         FormattedProgressBytes = string.Empty;
@@ -1661,6 +1787,8 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
         {
             case "offer_ready":
                 IsTextOffer = ev.IsText == true;
+                DoneBytes = 0;
+                TotalBytes = ev.TotalBytes ?? 0;
                 OfferTitle = _isTextOffer ? Strings.ReceiveOfferText : Strings.ReceiveOffer;
                 VerificationWords = ev.JoinedWordsLtr ?? string.Empty;
 
@@ -1679,6 +1807,7 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
                     ? Strings.FormatMessage("receiveAndMore", MessageArg.FromCount("count", moreCount))
                     : string.Empty;
 
+                ulong offerFileCount = ev.Files ?? 0;
                 string formattedTotal = ev.FormattedTotal ?? Strings.FormatBytes(ev.TotalBytes ?? 0);
                 if (_isTextOffer)
                 {
@@ -1686,17 +1815,34 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
                 }
                 else
                 {
-                    ulong fileCount = ev.Files ?? 0;
                     OfferSummary = Strings.FormatMessage(
                         "receiveOfferSummary",
-                        MessageArg.FromCount("files", fileCount),
+                        MessageArg.FromCount("files", offerFileCount),
                         MessageArg.FromText("size", formattedTotal));
                 }
 
                 Phase = ReceivePhase.Offer;
+                BackgroundNotificationReady?.Invoke(new NotificationEventInput(
+                    Role: TransferRole.Receive,
+                    Stage: TransferLifecycleStage.Offer,
+                    WindowActive: false,
+                    IsText: _isTextOffer,
+                    OfferFiles: offerFileCount,
+                    ByteCount: ev.TotalBytes ?? 0,
+                    FormattedBytes: formattedTotal));
                 break;
 
             case "progress":
+                if (ev.DoneBytes.HasValue)
+                {
+                    DoneBytes = ev.DoneBytes.Value;
+                }
+
+                if (ev.TotalBytes.HasValue)
+                {
+                    TotalBytes = ev.TotalBytes.Value;
+                }
+
                 if (ev.Percent is not null)
                 {
                     WholePercent = ev.Percent.Whole;
@@ -1712,7 +1858,8 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
             case "done":
                 WholePercent = 100;
                 RegionalPercentText = Strings.FormatPercent(1, 1).Formatted;
-                if (ev.IsText == true)
+                bool isTextReceive = ev.IsText == true;
+                if (isTextReceive)
                 {
                     IsTextOffer = true;
                     ResultTitle = Strings.ReceiveTextDone;
@@ -1745,6 +1892,16 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
                 }
 
                 Phase = ReceivePhase.Done;
+                BackgroundNotificationReady?.Invoke(new NotificationEventInput(
+                    Role: TransferRole.Receive,
+                    Stage: TransferLifecycleStage.Done,
+                    WindowActive: false,
+                    IsText: isTextReceive,
+                    FilesOk: ev.FilesOk ?? 0,
+                    FilesFailed: ev.FilesFailed ?? 0,
+                    ByteCount: ev.Bytes ?? TotalBytes,
+                    FormattedBytes: ev.FormattedBytes,
+                    SavedToFolder: SavedToFolder));
                 break;
 
             case "declined":
@@ -1753,6 +1910,13 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
                     ? (_isTextOffer ? Strings.ReceiveTextDeclined : Strings.ReceiveDeclined)
                     : ev.Summary;
                 Phase = ReceivePhase.Declined;
+                BackgroundNotificationReady?.Invoke(new NotificationEventInput(
+                    Role: TransferRole.Receive,
+                    Stage: TransferLifecycleStage.Declined,
+                    WindowActive: false,
+                    IsText: _isTextOffer,
+                    ErrorL10nKey: ev.L10nKey,
+                    LocalizedErrorSummary: ev.Summary));
                 break;
 
             case "failed":
@@ -1761,6 +1925,13 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
                 ErrorTechnicalEnglish = ev.TechnicalEnglish ?? string.Empty;
                 ShowErrorDetails = false;
                 Phase = ReceivePhase.Failed;
+                BackgroundNotificationReady?.Invoke(new NotificationEventInput(
+                    Role: TransferRole.Receive,
+                    Stage: TransferLifecycleStage.Failed,
+                    WindowActive: false,
+                    IsText: _isTextOffer,
+                    ErrorL10nKey: ev.L10nKey,
+                    LocalizedErrorSummary: ErrorSummary));
                 break;
         }
     }
@@ -1780,6 +1951,8 @@ public sealed partial class ReceiveViewModel : ObservableViewModel
         OfferMoreText = string.Empty;
         OfferFiles.Clear();
         VerificationWords = string.Empty;
+        DoneBytes = 0;
+        TotalBytes = 0;
         WholePercent = 0;
         RegionalPercentText = Strings.FormatPercent(0, 0).Formatted;
         FormattedProgressBytes = string.Empty;

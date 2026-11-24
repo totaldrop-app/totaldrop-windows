@@ -5,8 +5,12 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
-  IgnorableNamespaces="uap rescap desktop2">
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  IgnorableNamespaces="uap rescap desktop desktop2 desktop4 desktop5 com">
 
   <!-- Native ARM64 MSIX slice for Windows 11 on ARM / Snapdragon X Copilot+ PCs (ADR 0016, #86).
        Identity Name and Publisher are replaced by Partner Center reservation at Store submission. -->
@@ -112,10 +116,47 @@
           </uap:ShareTarget>
         </uap:Extension>
 
-        <!-- Phase 3 re-adds com:Extension (windows.comServer -> totaldrop_explorer_ext.dll,
-             CLSID 8f6e3d72-4b9a-4e1c-9d3a-7c2f5a81e4b0) and desktop4:Extension
-             (windows.fileExplorerContextMenus) once crates/totaldrop-explorer-ext is built,
-             so Phase 1 makeappx.exe pack validates strictly without /nv. -->
+        <!-- 3. COM Servers: Toast Activator ExeServer + File Explorer IExplorerCommand Surrogate (CT_ComServer XSD order) -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer
+              Executable="totaldrop-winui.exe"
+              Arguments="----AppNotificationActivated:"
+              DisplayName="TotalDrop Notification Activator">
+              <com:Class
+                Id="7df2cced-0448-4849-a140-41cd106eaa9b"
+                DisplayName="TotalDrop Notification Activator" />
+            </com:ExeServer>
+            <com:SurrogateServer DisplayName="TotalDrop Explorer Verb Host">
+              <com:Class
+                Id="8f6e3d72-4b9a-4e1c-9d3a-7c2f5a81e4b0"
+                Path="totaldrop_explorer_ext.dll"
+                ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+
+        <!-- 4. Windows 11 Top-Level File Explorer Context Menu ("Send with TotalDrop") -->
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb
+                Id="TotalDropSendFiles"
+                Clsid="8f6e3d72-4b9a-4e1c-9d3a-7c2f5a81e4b0" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb
+                Id="TotalDropSendFolder"
+                Clsid="8f6e3d72-4b9a-4e1c-9d3a-7c2f5a81e4b0" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+
+        <!-- 5. Windows App Notifications (Toast Activation) -->
+        <desktop:Extension Category="windows.toastNotificationActivation">
+          <desktop:ToastNotificationActivation
+            ToastActivatorCLSID="7df2cced-0448-4849-a140-41cd106eaa9b" />
+        </desktop:Extension>
       </Extensions>
     </Application>
   </Applications>

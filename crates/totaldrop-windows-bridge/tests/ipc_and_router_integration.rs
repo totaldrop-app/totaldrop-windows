@@ -650,3 +650,45 @@ async fn cancellation_token_pre_cancelled_and_inflight_returns_stopped_immediate
     hold_connections.abort();
     Ok(())
 }
+
+#[test]
+fn router_finish_ipc_eof_validates_clean_boundary_and_resets_truncated_streams() -> TestResult {
+    let localizer = WindowsLocalizer::new(["en-US"], Some("en-US"));
+    let mut router = WinUiWindowRouter::new(1, localizer, "0.1.0-beta.1", true);
+
+    // Clean boundary on idle decoder succeeds.
+    assert!(router.finish_ipc_eof().is_ok());
+
+    // Valid complete frame followed by clean EOF succeeds.
+    let ok_frame =
+        ActivationEnvelope::open_screen(ScreenTarget::Receive, Some(7)).encode_ipc_frame()?;
+    let decisions = router.ingest_ipc_bytes(&ok_frame)?;
+    assert_eq!(decisions.len(), 1);
+    assert!(router.finish_ipc_eof().is_ok());
+
+    // Truncated 2-byte header triggers MalformedIpcFrame on EOF and resets decoder.
+    assert!(router.ingest_ipc_bytes(&[0x10, 0x00])?.is_empty());
+    assert!(matches!(
+        router.finish_ipc_eof(),
+        Err(ActivationError::MalformedIpcFrame)
+    ));
+    assert!(!router.decoder().has_partial_frame());
+
+    // Truncated payload (declared 100 bytes, only 40 delivered) triggers MalformedIpcFrame on EOF and resets.
+    let mut partial = Vec::with_capacity(44);
+    partial.extend_from_slice(&100u32.to_le_bytes());
+    partial.extend_from_slice(&[b' '; 40]);
+    assert!(router.ingest_ipc_bytes(&partial)?.is_empty());
+    assert!(matches!(
+        router.finish_ipc_eof(),
+        Err(ActivationError::MalformedIpcFrame)
+    ));
+    assert!(!router.decoder().has_partial_frame());
+
+    // Subsequent valid frame decodes cleanly after EOF reset.
+    let recovered = router.ingest_ipc_bytes(&ok_frame)?;
+    assert_eq!(recovered.len(), 1);
+    assert!(router.finish_ipc_eof().is_ok());
+
+    Ok(())
+}

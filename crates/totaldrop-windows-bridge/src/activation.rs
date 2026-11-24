@@ -829,9 +829,11 @@ impl ActivationEnvelope {
                 }
             }
             ActivationPayload::ProtocolUri { code } => {
-                // Re-verify canonical & English forms through totaldrop-proto.
+                // Re-verify all derived ValidatedCode fields through totaldrop-proto so
+                // raw Named Pipe IPC frames cannot tamper with canonical, nameplate,
+                // word_count, ltr_isolated, protocol_uri, or web_uri.
                 let parsed = ValidatedCode::from_user_input(&code.display_english)?;
-                if parsed.canonical != code.canonical || parsed.nameplate != code.nameplate {
+                if parsed != *code {
                     return Err(ActivationError::InvalidUri(
                         UriValidationError::InvalidActivationLink,
                     ));

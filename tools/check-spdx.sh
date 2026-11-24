@@ -8,7 +8,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 missing=$(git ls-files \
-    '*.rs' '*.cs' '*.cpp' '*.h' '*.idl' '*.ps1' '*.sh' '*.py' |
+    '*.rs' '*.cs' '*.cpp' '*.h' '*.idl' '*.rc' '*.ps1' '*.sh' '*.py' |
   # REUSE-IgnoreStart (the patterns below are not this file's tags)
   while IFS= read -r f; do
     head -n 6 "$f" | grep -q 'SPDX-FileCopyrightText:' &&

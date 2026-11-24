@@ -136,7 +136,29 @@
                 </NavigationViewItem>
             </NavigationView.MenuItems>
 
-            <Frame x:Name="ContentFrame" Padding="24,16,24,24" />
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <InfoBar
+                    x:Name="BusyNoticeInfoBar"
+                    Grid.Row="0"
+                    Margin="24,12,24,0"
+                    Severity="Informational"
+                    IsClosable="True"
+                    IsOpen="{x:Bind IsBusyNoticeOpen, Mode=TwoWay}"
+                    Title="TotalDrop"
+                    Message="{x:Bind BusyNoticeMessage, Mode=OneWay}"
+                    AutomationProperties.Name="{x:Bind BusyNoticeMessage, Mode=OneWay}"
+                    AutomationProperties.LiveSetting="Assertive" />
+
+                <Frame
+                    x:Name="ContentFrame"
+                    Grid.Row="1"
+                    Padding="24,16,24,24" />
+            </Grid>
         </NavigationView>
     </Grid>
 </Window>

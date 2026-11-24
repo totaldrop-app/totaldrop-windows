@@ -28,6 +28,7 @@ namespace TotalDrop.WinUI.Views;
 public sealed partial class SendPage : Page
 {
     private readonly UISettings _uiSettings = new();
+    private readonly HashSet<TransferItemModel> _measuringDirectories = [];
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _pollTimer;
     private bool _koseAnimating;
     private ContentDialog? _activeCancelDialog;
@@ -53,8 +54,12 @@ public sealed partial class SendPage : Page
                 StartPolling();
                 PollSessionOnce();
             }
+
+            TriggerPendingDirectoryMeasurement();
         }
     }
+
+    public void TriggerPendingDirectoryMeasurement() => _ = MeasurePendingDirectoriesAsync();
 
     public void ShutdownSession()
     {
@@ -298,18 +303,32 @@ public sealed partial class SendPage : Page
 
     private void OnShareCodeClick(object sender, RoutedEventArgs e)
     {
-        string sharePayload = !string.IsNullOrEmpty(ViewModel.TransferWebUri)
-            ? ViewModel.TransferWebUri
-            : ViewModel.TransferCode;
-        if (string.IsNullOrEmpty(sharePayload))
+        string shareText = !string.IsNullOrEmpty(ViewModel.ShareText)
+            ? ViewModel.ShareText
+            : (!string.IsNullOrEmpty(ViewModel.TransferWebUri)
+                ? ViewModel.TransferWebUri
+                : ViewModel.TransferCode);
+        if (string.IsNullOrEmpty(shareText))
         {
             return;
         }
 
+        nint hwnd = XamlRoot?.ContentIslandEnvironment is not null
+            ? Win32Interop.GetWindowFromWindowId(XamlRoot.ContentIslandEnvironment.AppWindowId)
+            : 0;
+        if (WindowsShareSheet.TryShowShareSheet(hwnd, "TotalDrop", shareText, ViewModel.TransferWebUri))
+        {
+            return;
+        }
+
+        // Safe fallback when Windows Share Broker is unavailable (e.g., unpackaged/headless sessions).
+        string clipboardFallback = !string.IsNullOrEmpty(ViewModel.TransferWebUri)
+            ? ViewModel.TransferWebUri
+            : ViewModel.TransferCode;
         try
         {
             DataPackage pkg = new();
-            pkg.SetText(sharePayload);
+            pkg.SetText(clipboardFallback);
             Clipboard.SetContent(pkg);
             ViewModel.CopiedFeedbackVisible = true;
         }
@@ -471,6 +490,8 @@ public sealed partial class SendPage : Page
         }
     }
 
+    public void DismissCancelDialog() => DismissActiveDialog();
+
     private void DismissActiveDialog()
     {
         _activeCancelDialog?.Hide();
@@ -511,7 +532,9 @@ public sealed partial class SendPage : Page
         List<TransferItemModel> dirs = [];
         foreach (TransferItemModel item in ViewModel.SelectedItems)
         {
-            if (item.IsDirectory)
+            if (item.IsDirectory
+                && string.Equals(item.FormattedSize, ViewModel.Strings.SendCounting, StringComparison.Ordinal)
+                && _measuringDirectories.Add(item))
             {
                 dirs.Add(item);
             }
@@ -522,14 +545,24 @@ public sealed partial class SendPage : Page
             return;
         }
 
-        foreach (TransferItemModel dirItem in dirs)
+        try
         {
-            ulong bytes = await Task.Run(() => ComputeDirectoryBytes(dirItem.ExtendedPath));
-            dirItem.ByteSize = bytes;
-            dirItem.FormattedSize = ViewModel.Strings.FormatBytes(bytes);
-        }
+            foreach (TransferItemModel dirItem in dirs)
+            {
+                ulong bytes = await Task.Run(() => ComputeDirectoryBytes(dirItem.ExtendedPath));
+                dirItem.ByteSize = bytes;
+                dirItem.FormattedSize = ViewModel.Strings.FormatBytes(bytes);
+            }
 
-        ViewModel.UpdateSelectionSummaryFromItems();
+            ViewModel.UpdateSelectionSummaryFromItems();
+        }
+        finally
+        {
+            foreach (TransferItemModel dirItem in dirs)
+            {
+                _measuringDirectories.Remove(dirItem);
+            }
+        }
     }
 
     private static ulong ComputeDirectoryBytes(string rootPath)

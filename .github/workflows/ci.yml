@@ -70,7 +70,7 @@ jobs:
         env:
           TOTALDROP_REQUIRE_IPV6: "1"
         run: cargo test --workspace --locked
-      - name: Build native ARM64 totaldrop-windows-ffi cdylib release
+      - name: Build native ARM64 FFI & Explorer COM cdylibs release
         if: matrix.os == 'windows-11-arm'
         shell: bash
         run: >-
@@ -79,6 +79,7 @@ jobs:
           --config target-arm64/cargo-config.toml
           --target aarch64-pc-windows-msvc
           -p totaldrop-windows-ffi
+          -p totaldrop-explorer-ext
           --release
           --locked
 
@@ -119,7 +120,7 @@ jobs:
         run: |
           rustup show active-toolchain || rustup toolchain install
           rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
-      - name: Build totaldrop-windows-bridge & FFI cdylib release (x86_64-pc-windows-msvc)
+      - name: Build totaldrop-windows-bridge, FFI & Explorer COM cdylibs release (x86_64-pc-windows-msvc)
         shell: bash
         run: >-
           env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS
@@ -128,9 +129,10 @@ jobs:
           --target x86_64-pc-windows-msvc
           -p totaldrop-windows-bridge
           -p totaldrop-windows-ffi
+          -p totaldrop-explorer-ext
           --release
           --locked
-      - name: Build totaldrop-windows-bridge & check FFI (aarch64-pc-windows-msvc)
+      - name: Build totaldrop-windows-bridge & check FFI + Explorer COM (aarch64-pc-windows-msvc)
         shell: bash
         run: |
           env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
@@ -145,6 +147,7 @@ jobs:
             --config target-arm64/cargo-config.toml \
             --target aarch64-pc-windows-msvc \
             -p totaldrop-windows-ffi \
+            -p totaldrop-explorer-ext \
             --release \
             --locked
       - name: Validate PowerShell AST syntax

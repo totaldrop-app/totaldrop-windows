@@ -47,8 +47,9 @@
     <StackTraceSupport>false</StackTraceSupport>
     <!-- Preserve Windows OS ICU globalization for 35 languages & CLDR regional formatting (ADR 0008, ADR 0016) -->
     <InvariantGlobalization>false</InvariantGlobalization>
-    <!-- Disable legacy reflection-based XAML type info; enforce compile-time x:Bind -->
+    <!-- Disable legacy reflection-based XAML type info and JSON reflection; enforce compile-time x:Bind and JsonSerializerContext -->
     <EnableTypeInfoReflection>false</EnableTypeInfoReflection>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Platform)' == 'x64'">

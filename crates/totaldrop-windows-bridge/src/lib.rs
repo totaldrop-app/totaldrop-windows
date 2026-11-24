@@ -800,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_json_rejects_unknown_schema_version_and_tampered_canonical_code() {
+    fn envelope_json_rejects_unknown_schema_version_and_tampered_canonical_code() -> TestResult {
         let bad_version = br#"{"version":99,"initiator_pid":null,"payload":{"kind":"open_screen","screen":"send"}}"#;
         assert_eq!(
             ActivationEnvelope::from_json_bytes(bad_version),
@@ -812,5 +812,35 @@ mod tests {
             ActivationEnvelope::from_json_bytes(tampered_code),
             Err(ActivationError::InvalidUri(_))
         ));
+
+        let valid = ValidatedCode::from_user_input("7-harbor-rocket")?;
+
+        let mut bad_web = valid.clone();
+        bad_web.web_uri = "https://evil.example/r#7-harbor-rocket".to_owned();
+        let mut bad_proto = valid.clone();
+        bad_proto.protocol_uri = "https://evil.example/r#7-harbor-rocket".to_owned();
+        let mut bad_ltr = valid.clone();
+        bad_ltr.ltr_isolated = "spoofed".to_owned();
+        let mut bad_count = valid;
+        bad_count.word_count = 3;
+
+        for tampered in [bad_web, bad_proto, bad_ltr, bad_count] {
+            let raw = serde_json::json!({
+                "version": 1,
+                "initiator_pid": null,
+                "payload": {
+                    "kind": "protocol_uri",
+                    "code": tampered,
+                }
+            })
+            .to_string();
+            assert_eq!(
+                ActivationEnvelope::from_json_bytes(raw.as_bytes()),
+                Err(ActivationError::InvalidUri(
+                    UriValidationError::InvalidActivationLink
+                ))
+            );
+        }
+        Ok(())
     }
 }

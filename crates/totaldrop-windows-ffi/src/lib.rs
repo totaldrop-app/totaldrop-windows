@@ -20,6 +20,7 @@
 //!   serialization never fails or truncates mid-payload.
 
 mod quit;
+mod router;
 mod sessions;
 
 use std::ffi::{CStr, CString, c_char};
@@ -34,6 +35,7 @@ use totaldrop_windows_bridge::{
     validate_windows_paths,
 };
 
+use crate::router::{FfiActivityState, RouterCallError, activation_error_l10n_key};
 use crate::sessions::FfiNetworkConfig;
 
 /// Independent SemVer of the TotalDrop for Windows 11 application.
@@ -142,13 +144,14 @@ fn error_json(
     cause: Option<&str>,
     message: impl Into<String>,
 ) -> *mut c_char {
+    let sanitized_message = sanitize_error_text(&message.into());
     let envelope = FfiErrorEnvelope {
         ok: false,
         error: FfiErrorBody {
             kind,
             l10n_key,
             cause,
-            message: message.into(),
+            message: sanitized_message,
         },
     };
     serialize_or_error(&envelope)
@@ -198,6 +201,7 @@ unsafe fn read_optional_c_str<'a>(ptr: *const c_char) -> Result<Option<&'a str>,
 }
 
 const MAX_ERROR_PREVIEW_CHARS: usize = 64;
+const MAX_ERROR_DETAIL_CHARS: usize = 256;
 
 fn bounded_debug_preview(s: &str, max_chars: usize) -> String {
     if s.chars().nth(max_chars).is_some() {
@@ -205,6 +209,58 @@ fn bounded_debug_preview(s: &str, max_chars: usize) -> String {
         format!("{preview:?}...")
     } else {
         format!("{s:?}")
+    }
+}
+
+fn sanitize_error_text(raw: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if is_disallowed_ui_metadata_char(ch) {
+            let _ = write!(out, "<U+{:04X}>", u32::from(ch));
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn bounded_sanitized_error_detail(raw: &str, max_chars: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut truncated = false;
+    let mut out = String::with_capacity(max_chars.min(raw.len()));
+    for (idx, ch) in raw.chars().enumerate() {
+        if idx == max_chars {
+            truncated = true;
+            break;
+        }
+        if is_disallowed_ui_metadata_char(ch) {
+            let _ = write!(out, "<U+{:04X}>", u32::from(ch));
+        } else {
+            out.push(ch);
+        }
+    }
+    if truncated {
+        out.push_str("...");
+    }
+    out
+}
+
+fn format_activation_error_message(err: &ActivationError) -> String {
+    match err {
+        ActivationError::InvalidUri(uri_err) => {
+            format!(
+                "invalid activation URI: {}",
+                format_uri_error_message(uri_err)
+            )
+        }
+        ActivationError::InvalidJson(msg) => format!(
+            "invalid activation envelope JSON: {}",
+            bounded_sanitized_error_detail(msg, MAX_ERROR_DETAIL_CHARS)
+        ),
+        other => sanitize_error_text(&other.to_string()),
     }
 }
 
@@ -738,7 +794,13 @@ pub unsafe extern "C" fn totaldrop_win_format_message_json(
                             "invalid_json",
                             Some("errorOther"),
                             None,
-                            format!("invalid args_json: {err}"),
+                            format!(
+                                "invalid args_json: {}",
+                                bounded_sanitized_error_detail(
+                                    &err.to_string(),
+                                    MAX_ERROR_DETAIL_CHARS,
+                                )
+                            ),
                         );
                     }
                 };
@@ -966,7 +1028,10 @@ pub unsafe extern "C" fn totaldrop_win_validate_paths_json(
                     "invalid_json",
                     Some("errorStorage"),
                     None,
-                    format!("invalid paths_json array: {err}"),
+                    format!(
+                        "invalid paths_json array: {}",
+                        bounded_sanitized_error_detail(&err.to_string(), MAX_ERROR_DETAIL_CHARS)
+                    ),
                 );
             }
         };
@@ -976,7 +1041,7 @@ pub unsafe extern "C" fn totaldrop_win_validate_paths_json(
                 activation_error_kind(&err),
                 Some("errorStorage"),
                 None,
-                err.to_string(),
+                format_activation_error_message(&err),
             ),
         }
     })
@@ -1213,6 +1278,254 @@ pub extern "C" fn totaldrop_win_session_destroy(session_id: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn totaldrop_win_shutdown(timeout_ms: u32) -> i32 {
     guard_ffi_i32(|| sessions::shutdown_all(timeout_ms))
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 Exports (7 single-window IPC router symbols -> 31 cumulative)
+
+fn router_error_json(err: RouterCallError) -> *mut c_char {
+    match err {
+        RouterCallError::InvalidHandle => error_json(
+            "invalid_handle",
+            Some("errorOther"),
+            None,
+            "unknown or destroyed router handle",
+        ),
+        RouterCallError::Poisoned => error_json(
+            "internal",
+            Some("errorOther"),
+            None,
+            "router registry lock poisoned",
+        ),
+        RouterCallError::Activation(act_err) => error_json(
+            activation_error_kind(&act_err),
+            Some(activation_error_l10n_key(&act_err)),
+            None,
+            format_activation_error_message(&act_err),
+        ),
+    }
+}
+
+/// Creates a stateful single-window Named Pipe IPC router backed by
+/// [`totaldrop_windows_bridge::WinUiWindowRouter`] and returns a monotonic
+/// non-zero `u64` handle (`0` on invalid UTF-8 or internal failure).
+///
+/// `lang_tags` and `region_tag` may be null or empty (falling back to English);
+/// `app_version` may be null or empty (falling back to [`APP_VERSION`]).
+/// Release the returned handle via [`totaldrop_win_router_destroy`].
+///
+/// # Safety
+///
+/// Each non-null pointer (`lang_tags`, `region_tag`, `app_version`) must point
+/// to a valid NUL-terminated C string for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn totaldrop_win_router_create(
+    session_id: u32,
+    lang_tags: *const c_char,
+    region_tag: *const c_char,
+    app_version: *const c_char,
+    animations_enabled: bool,
+) -> u64 {
+    guard_ffi_u64(|| {
+        // SAFETY: Forwarded from this function's safety contract.
+        let Ok(langs_opt) = (unsafe { read_optional_c_str(lang_tags) }) else {
+            return 0;
+        };
+        // SAFETY: Forwarded from this function's safety contract.
+        let Ok(region_opt) = (unsafe { read_optional_c_str(region_tag) }) else {
+            return 0;
+        };
+        // SAFETY: Forwarded from this function's safety contract.
+        let Ok(version_opt) = (unsafe { read_optional_c_str(app_version) }) else {
+            return 0;
+        };
+        let sanitized_version = version_opt
+            .map(sanitize_ui_metadata)
+            .filter(|ver| !ver.is_empty());
+        let version = sanitized_version.as_deref().unwrap_or(APP_VERSION);
+        let localizer = build_localizer(langs_opt, region_opt);
+        router::create_router(session_id, localizer, version, animations_enabled)
+    })
+}
+
+/// Feeds a raw byte slice read from the per-session Named Pipe through Rust
+/// `IpcFrameDecoder` and `WinUiWindowRouter`, returning a direct JSON array of
+/// `RouterDecision` objects (`"[]"` when buffering an incomplete frame or on a
+/// clean `len == 0` EOF boundary).
+///
+/// Passing `len == 0` signals stream EOF / frame-boundary validation via
+/// `WinUiWindowRouter::finish_ipc_eof` without dereferencing `ptr` (passing a
+/// null `ptr` with `len == 0` is safe and UB-free). On protocol or validation
+/// errors, the decoder is reset cleanly and a strict 4-field error envelope is
+/// returned. The returned pointer must be freed via [`totaldrop_win_string_free`].
+///
+/// # Safety
+///
+/// When `len > 0`, `ptr` must either be null (yielding a `null_pointer` error
+/// JSON) or point to at least `len` readable bytes for the duration of this
+/// call. When `len == 0`, `ptr` is never dereferenced and may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn totaldrop_win_router_ingest_ipc_bytes_json(
+    router_id: u64,
+    ptr: *const u8,
+    len: usize,
+) -> *mut c_char {
+    guard_ffi_json(|| {
+        if len == 0 {
+            return match router::finish_ipc_eof(router_id) {
+                Ok(()) => into_c_string_ptr("[]".to_owned()),
+                Err(err) => router_error_json(err),
+            };
+        }
+        if ptr.is_null() {
+            return error_json(
+                "null_pointer",
+                Some("errorOther"),
+                None,
+                "IPC byte buffer pointer must not be null when len > 0",
+            );
+        }
+        let Ok(_) = isize::try_from(len) else {
+            return error_json(
+                "envelope_too_large",
+                Some("errorOther"),
+                None,
+                format!("IPC byte chunk of {len} bytes exceeds maximum addressable slice length"),
+            );
+        };
+        // SAFETY: `len > 0`, `len <= isize::MAX`, and caller guarantees `ptr`
+        // points to `len` readable bytes for the duration of this call.
+        let chunk = unsafe { std::slice::from_raw_parts(ptr, len) };
+        match router::ingest_ipc_bytes(router_id, chunk) {
+            Ok(decisions) => serialize_or_error(&decisions),
+            Err(err) => router_error_json(err),
+        }
+    })
+}
+
+/// Updates the router's 35-language localizer and regional formatting tag,
+/// returning the direct `WinUiBridgeMessage` `{"kind":"ui_bundle_ready","data":{...}}`
+/// JSON (also queued into the router outbox).
+///
+/// The returned pointer must be freed via [`totaldrop_win_string_free`].
+///
+/// # Safety
+///
+/// Each non-null pointer (`lang_tags`, `region_tag`) must point to a valid
+/// NUL-terminated C string for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn totaldrop_win_router_update_locale_json(
+    router_id: u64,
+    lang_tags: *const c_char,
+    region_tag: *const c_char,
+) -> *mut c_char {
+    guard_ffi_json(|| {
+        // SAFETY: Forwarded from this function's safety contract.
+        let langs_opt = match unsafe { read_optional_c_str(lang_tags) } {
+            Ok(opt) => opt,
+            Err(msg) => return error_json("invalid_utf8", Some("errorOther"), None, msg),
+        };
+        // SAFETY: Forwarded from this function's safety contract.
+        let region_opt = match unsafe { read_optional_c_str(region_tag) } {
+            Ok(opt) => opt,
+            Err(msg) => return error_json("invalid_utf8", Some("errorOther"), None, msg),
+        };
+        let localizer = build_localizer(langs_opt, region_opt);
+        match router::update_locale(router_id, localizer) {
+            Ok(msg) => serialize_or_error(&msg),
+            Err(err) => router_error_json(err),
+        }
+    })
+}
+
+/// Updates Windows reduced-motion (`UISettings.AnimationsEnabled`) state on the
+/// router and returns the direct `WinUiBridgeMessage`
+/// `{"kind":"mark_animation_state","data":{...}}` JSON.
+///
+/// The returned pointer must be freed via [`totaldrop_win_string_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn totaldrop_win_router_set_animations_json(
+    router_id: u64,
+    enabled: bool,
+) -> *mut c_char {
+    guard_ffi_json(|| match router::set_animations(router_id, enabled) {
+        Ok(msg) => serialize_or_error(&msg),
+        Err(err) => router_error_json(err),
+    })
+}
+
+/// Updates the router's active window transfer state from JSON
+/// (`{"state":"idle"|"preparing_send"|"waiting_for_peer"|"connecting_receive"|"offer_prompt_pending"|"transferring"|"showing_text_note",...}`)
+/// and returns the direct `WinUiBridgeMessage`
+/// `{"kind":"mark_animation_state","data":{...}}` JSON.
+///
+/// The returned pointer must be freed via [`totaldrop_win_string_free`].
+///
+/// # Safety
+///
+/// `activity_json` must either be null (yielding `null_pointer`) or point to a
+/// valid NUL-terminated C string for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn totaldrop_win_router_set_activity_json(
+    router_id: u64,
+    activity_json: *const c_char,
+) -> *mut c_char {
+    guard_ffi_json(|| {
+        // SAFETY: Forwarded from this function's safety contract.
+        let json_opt = match unsafe { read_optional_c_str(activity_json) } {
+            Ok(opt) => opt,
+            Err(msg) => return error_json("invalid_utf8", Some("errorOther"), None, msg),
+        };
+        let Some(json_str) = json_opt else {
+            return error_json(
+                "null_pointer",
+                Some("errorOther"),
+                None,
+                "activity_json pointer must not be null",
+            );
+        };
+        let parsed: FfiActivityState = match serde_json::from_str(json_str) {
+            Ok(state) => state,
+            Err(err) => {
+                return error_json(
+                    "invalid_json",
+                    Some("errorOther"),
+                    None,
+                    format!(
+                        "invalid router activity JSON: {}",
+                        bounded_sanitized_error_detail(&err.to_string(), MAX_ERROR_DETAIL_CHARS)
+                    ),
+                );
+            }
+        };
+        match router::set_activity(router_id, parsed.into_bridge_state()) {
+            Ok(msg) => serialize_or_error(&msg),
+            Err(err) => router_error_json(err),
+        }
+    })
+}
+
+/// Drains queued FIFO `WinUiBridgeMessage` snapshots from `router_id` as a
+/// newline-delimited JSON (`ndjson`) string (`""` when empty).
+///
+/// Returns a 4-field error envelope (`kind: "invalid_handle"`) if `router_id`
+/// is `0`, unknown, or already destroyed. The returned pointer must be freed
+/// via [`totaldrop_win_string_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn totaldrop_win_router_drain_ndjson(router_id: u64) -> *mut c_char {
+    guard_ffi_json(|| match router::drain_ndjson(router_id) {
+        Ok(ndjson) => into_c_string_ptr(ndjson),
+        Err(err) => router_error_json(err),
+    })
+}
+
+/// Destroys a router handle created by [`totaldrop_win_router_create`].
+///
+/// Returns [`FFI_OK`] (`0`) the first time and [`FFI_ERR_INVALID_HANDLE`] (`-3`)
+/// if `router_id` is `0`, unknown, or already destroyed.
+#[unsafe(no_mangle)]
+pub extern "C" fn totaldrop_win_router_destroy(router_id: u64) -> i32 {
+    guard_ffi_i32(|| router::destroy_router(router_id))
 }
 
 #[cfg(test)]

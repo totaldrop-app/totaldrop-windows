@@ -21,6 +21,7 @@ path = [
   "crates/totaldrop-l10n/**",
   "crates/totaldrop-windows-bridge/**",
   "crates/totaldrop-windows-ffi/**",
+  "crates/totaldrop-explorer-ext/**",
   "l10n/**",
   "ui-winui3-fluent2/Strings/**",
 ]

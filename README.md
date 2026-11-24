@@ -20,16 +20,17 @@ TotalDrop's invariant across every platform is strict: **protocol state machines
 │   ├── totaldrop-core/                  # QUIC + relay transport, framing, pairing, path traversal guards
 │   ├── totaldrop-l10n/                  # Compile-time ARB -> ICU4X message & regional number/percent engine
 │   ├── totaldrop-windows-bridge/        # Pure-Rust Windows 11 bridge: URI validation, Explorer IPC, 35-lang UI
-│   └── totaldrop-windows-ffi/           # Thin C ABI cdylib boundary (totaldrop_windows_ffi.dll)
+│   ├── totaldrop-windows-ffi/           # Thin C ABI cdylib boundary (totaldrop_windows_ffi.dll)
+│   └── totaldrop-explorer-ext/          # Pure-Rust IExplorerCommand COM server (totaldrop_explorer_ext.dll)
 ├── ui-winui3-fluent2/                   # 100% native WinUI 3 (Windows App SDK 1.8+) + C# 14 (.NET 10 Native AOT)
 │   ├── TotalDrop.WinUI.csproj           # net10.0-windows10.0.26100.0, PublishAot=true, CsWinRT, x64;ARM64
-│   ├── App.xaml(.cs)                    # Single-instance redirection, totaldrop:// URI & Share Target activation
+│   ├── App.xaml(.cs)                    # Single-instance Named Pipe IPC, totaldrop:// URI & Share Target activation
 │   ├── MainWindow.xaml(.cs)             # MicaBackdrop + DesktopAcrylic fallback, live Accent & High Contrast
 │   ├── Views/SendPage.xaml(.cs)         # Fluent 2 drag-and-drop card, wormhole code, Narrator UIA semantics
 │   ├── Views/ReceivePage.xaml(.cs)      # Code input, verification words, regional floor-rounded progress bar
 │   ├── ViewModels/TransferViewModels.cs # Reflection-free x:Bind observable view models
 │   ├── Interop/NativeBridge.cs          # LibraryImport source-generated C ABI P/Invoke bindings (zero Marshal)
-│   └── ExplorerExtension/               # Native COM IExplorerCommand server spec, IDL, and out-of-proc handoff
+│   └── ExplorerExtension/               # Windows 11 File Explorer COM registration & handoff architecture notes
 ├── target-x86_64/                       # Isolated Intel/AMD x64 target unit (x86_64-pc-windows-msvc)
 │   ├── cargo-config.toml                # +crt-static notes, AVX2 / PCLMUL crypto acceleration profile
 │   ├── Package.x64.appxmanifest         # ProcessorArchitecture="x64", totaldrop://, FileExplorerContextMenus
@@ -66,7 +67,7 @@ Windows 11's modern top-level right-click menu (**"Send with TotalDrop"**) is po
 
 - **Zero `cmd.exe` / `ShellExecute` string concatenation:** Command-line arguments are encoded strictly with `CommandLineToArgvW`-exact escaping (`quote_win32_arg` / `split_win32_command_line`), so filenames containing spaces, quotes, `&`, `|`, `%TEMP%`, `$()`, backslashes, or non-BMP Unicode scalars can never trigger shell command injection.
 - **No `MAX_PATH` (260 UTF-16 code units) ceiling:** Standard drive (`C:\...`), UNC (`\\server\share\...`), and Win32 extended-length (`\\?\C:\...` and `\\?\UNC\server\share\...`) paths up to 32,767 UTF-16 code units are validated, normalized for display vs. Win32 `CreateFileW` extended access (`to_extended_length_path`), and checked against embedded NULs, ASCII control characters, reserved DOS device names (`CON`, `NUL`, `COM1`, `LPT1`, ...), and Win32 device namespace escapes (`\\.\PhysicalDrive0`).
-- **No `CreateProcessW` 32,767-character truncation:** `plan_explorer_invocation` uses direct `--send-files` argv below a conservative 28,672 UTF-16 code-unit budget for small selections, and automatically upgrades large multi-file selections (hundreds or thousands of files) to single-instance Named Pipe IPC (`\\.\pipe\LOCAL\app.totaldrop.TotalDrop.v1.<SessionId>`) carrying a versioned, 4-byte little-endian length-prefixed JSON `ActivationEnvelope` (capped at 4 MiB).
+- **No `CreateProcessW` 32,767-character truncation:** `plan_explorer_invocation` uses direct `--explorer-send` argv below a conservative 30,000 UTF-16 code-unit budget (`MAX_COMMAND_LINE_UTF16`) for small selections, and automatically upgrades large multi-file selections (hundreds or thousands of files) to single-instance Named Pipe IPC (`\\.\pipe\LOCAL\app.totaldrop.TotalDrop.v1.<SessionId>`) carrying a versioned, 4-byte little-endian length-prefixed JSON `ActivationEnvelope` (capped at 4 MiB).
 
 ### 4. 35 Languages, Regional Percent Floor-Rounding (`#483`), and Bidi Safety
 
