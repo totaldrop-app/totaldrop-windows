@@ -199,6 +199,7 @@ foreach ($requiredRel in @(
     "MainWindow.xbf",
     "Views\SendPage.xbf",
     "Views\ReceivePage.xbf",
+    "Views\SettingsPage.xbf",
     "Assets\StoreLogo.scale-100.png",
     "Assets\TotalDrop.ico"
 )) {

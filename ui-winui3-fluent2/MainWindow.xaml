@@ -15,6 +15,39 @@
         x:Name="RootShellGrid"
         AutomationProperties.LandmarkType="Main"
         AutomationProperties.Name="TotalDrop">
+        <Grid.Resources>
+            <Storyboard x:Name="KoseRotationStoryboard" RepeatBehavior="Forever">
+                <DoubleAnimationUsingKeyFrames
+                    Storyboard.TargetName="BrandMarkRotate"
+                    Storyboard.TargetProperty="Angle"
+                    Duration="0:0:3.2">
+                    <SplineDoubleKeyFrame KeyTime="0:0:0.6" Value="90">
+                        <SplineDoubleKeyFrame.KeySpline>
+                            <KeySpline ControlPoint1="0.65,0" ControlPoint2="0.35,1" />
+                        </SplineDoubleKeyFrame.KeySpline>
+                    </SplineDoubleKeyFrame>
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.8" Value="90" />
+                    <SplineDoubleKeyFrame KeyTime="0:0:1.4" Value="180">
+                        <SplineDoubleKeyFrame.KeySpline>
+                            <KeySpline ControlPoint1="0.65,0" ControlPoint2="0.35,1" />
+                        </SplineDoubleKeyFrame.KeySpline>
+                    </SplineDoubleKeyFrame>
+                    <LinearDoubleKeyFrame KeyTime="0:0:1.6" Value="180" />
+                    <SplineDoubleKeyFrame KeyTime="0:0:2.2" Value="270">
+                        <SplineDoubleKeyFrame.KeySpline>
+                            <KeySpline ControlPoint1="0.65,0" ControlPoint2="0.35,1" />
+                        </SplineDoubleKeyFrame.KeySpline>
+                    </SplineDoubleKeyFrame>
+                    <LinearDoubleKeyFrame KeyTime="0:0:2.4" Value="270" />
+                    <SplineDoubleKeyFrame KeyTime="0:0:3.0" Value="360">
+                        <SplineDoubleKeyFrame.KeySpline>
+                            <KeySpline ControlPoint1="0.65,0" ControlPoint2="0.35,1" />
+                        </SplineDoubleKeyFrame.KeySpline>
+                    </SplineDoubleKeyFrame>
+                    <LinearDoubleKeyFrame KeyTime="0:0:3.2" Value="360" />
+                </DoubleAnimationUsingKeyFrames>
+            </Storyboard>
+        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="48" />
             <RowDefinition Height="*" />
@@ -40,7 +73,25 @@
                         <Path
                             x:Name="BrandMarkPath"
                             Data="M55 15H97V57A42 42 0 1 1 55 15Z"
-                            Fill="{ThemeResource TotalDropMarkBrush}" />
+                            Fill="{ThemeResource TotalDropMarkBrush}">
+                            <Path.RenderTransform>
+                                <RotateTransform
+                                    x:Name="BrandMarkRotate"
+                                    CenterX="55"
+                                    CenterY="57"
+                                    Angle="0" />
+                            </Path.RenderTransform>
+                        </Path>
+                        <Path
+                            x:Name="BrandMarkDoneCheckPath"
+                            Data="M37 58 L50 71 L74 45"
+                            Stroke="{ThemeResource TotalDropMarkOnBrush}"
+                            StrokeThickness="9"
+                            StrokeStartLineCap="Round"
+                            StrokeEndLineCap="Round"
+                            StrokeLineJoin="Round"
+                            Fill="Transparent"
+                            Visibility="Collapsed" />
                     </Canvas>
                 </Viewbox>
 
@@ -49,6 +100,7 @@
                     Text="TotalDrop"
                     Style="{StaticResource CaptionTextBlockStyle}"
                     VerticalAlignment="Center"
+                    TextWrapping="Wrap"
                     IsTextScaleFactorEnabled="True" />
             </StackPanel>
         </Grid>
@@ -61,7 +113,7 @@
             IsBackButtonVisible="Collapsed"
             IsSettingsVisible="True"
             SelectionChanged="OnNavigationSelectionChanged"
-            AutomationProperties.Name="Main navigation">
+            AutomationProperties.Name="{x:Bind Strings.DesktopGenericName, Mode=OneWay}">
             <NavigationView.MenuItems>
                 <NavigationViewItem
                     x:Name="NavSendItem"

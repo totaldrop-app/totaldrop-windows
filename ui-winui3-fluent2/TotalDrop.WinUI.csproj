@@ -23,6 +23,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- Allowed strictly for source-generated [LibraryImport] P/Invoke to totaldrop_windows_ffi.dll -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefaultItemExcludes>$(DefaultItemExcludes);TotalDrop.WinUI.Tests\**</DefaultItemExcludes>
 
     <!-- WinUI 3 + Microsoft Store Framework Dependency (ADR 0016).
          Package manifests live in target-x86_64/ and target-arm64/ and are indexed/packed by
@@ -87,7 +88,7 @@
   </ItemGroup>
 
   <!-- Fail loudly if totaldrop_windows_ffi.dll has not been built for the target architecture -->
-  <Target Name="VerifyNativeBridgeDll" BeforeTargets="Build;Publish">
+  <Target Name="VerifyNativeBridgeDll" BeforeTargets="BeforeBuild;PrepareForPublish">
     <Error Condition="'$(_NativeBridgeDll)' == ''"
            Text="Unsupported Platform '$(Platform)'. Specify -p:Platform=x64 or -p:Platform=ARM64." />
     <Error Condition="!Exists('$(_NativeBridgeDll)')"

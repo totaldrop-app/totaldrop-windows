@@ -17,21 +17,25 @@
                     <SolidColorBrush x:Key="TotalDropMarkBrush" Color="#6D4AE0" />
                     <SolidColorBrush x:Key="TotalDropCardBackgroundBrush" Color="#B3FFFFFF" />
                     <SolidColorBrush x:Key="TotalDropCardStrokeBrush" Color="#19000000" />
+                    <SolidColorBrush x:Key="TotalDropMarkOnBrush" Color="#F4F2FB" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Dark">
                     <SolidColorBrush x:Key="TotalDropMarkBrush" Color="#A68BFF" />
                     <SolidColorBrush x:Key="TotalDropCardBackgroundBrush" Color="#66202020" />
                     <SolidColorBrush x:Key="TotalDropCardStrokeBrush" Color="#1FFFFFFF" />
+                    <SolidColorBrush x:Key="TotalDropMarkOnBrush" Color="#22184F" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
                     <SolidColorBrush x:Key="TotalDropMarkBrush" Color="{ThemeResource SystemColorHighlightColor}" />
                     <SolidColorBrush x:Key="TotalDropCardBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="TotalDropCardStrokeBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="TotalDropMarkOnBrush" Color="{ThemeResource SystemColorHighlightTextColor}" />
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 
             <!-- TotalDrop Kose geometry (112x112 unit canvas, never mirrored in RTL) -->
             <x:String x:Key="TotalDropKosePathData">M55 15H97V57A42 42 0 1 1 55 15Z</x:String>
+            <x:String x:Key="TotalDropDoneCheckPathData">M37 58 L50 71 L74 45</x:String>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

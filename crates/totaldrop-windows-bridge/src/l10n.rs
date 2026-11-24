@@ -165,6 +165,166 @@ pub struct WindowsUiBundle {
     pub keep_awake_reason: String,
     /// Formatted version label (`settingsVersion`).
     pub version_label: String,
+    /// App generic description (`desktopGenericName`).
+    pub desktop_generic_name: String,
+    /// Home send card title (`homeSendTitle`).
+    pub home_send_title: String,
+    /// Home send card body (`homeSendBody`).
+    pub home_send_body: String,
+    /// Home receive card title (`homeReceiveTitle`).
+    pub home_receive_title: String,
+    /// Home receive card body (`homeReceiveBody`).
+    pub home_receive_body: String,
+    /// Home privacy footer (`homeFooter`).
+    pub home_footer: String,
+    /// Relay/network note (`sameNetworkNote`).
+    pub same_network_note: String,
+    /// Done button (`done`).
+    pub done: String,
+    /// Try again button (`tryAgain`).
+    pub try_again: String,
+    /// Back button (`back`).
+    pub back: String,
+    /// Stop button (`stop`).
+    pub stop: String,
+    /// Keep going button (`keepGoing`).
+    pub keep_going: String,
+    /// Expandable details toggle (`moreInfo`).
+    pub more_info: String,
+    /// Open destination folder button (`openFolder`).
+    pub open_folder: String,
+    /// Cancel confirmation dialog title (`cancelTransferTitle`).
+    pub cancel_transfer_title: String,
+    /// Cancel confirmation dialog body (`cancelTransferBody`).
+    pub cancel_transfer_body: String,
+    /// Technical English message caption (`technicalDetail`).
+    pub technical_detail: String,
+    /// Empty selection heading (`sendEmpty`).
+    pub send_empty: String,
+    /// Empty selection hint (`sendEmptyHint`).
+    pub send_empty_hint: String,
+    /// Counting selected files caption (`sendCounting`).
+    pub send_counting: String,
+    /// Remove item button (`sendRemove`).
+    pub send_remove: String,
+    /// Preparing transfer status (`sendPreparing`).
+    pub send_preparing: String,
+    /// Failed to add files error (`sendAddFailed`).
+    pub send_add_failed: String,
+    /// Transfer code sharing instructions (`sendCodeHint`).
+    pub send_code_hint: String,
+    /// Waiting for receiver caption (`sendWaiting`).
+    pub send_waiting: String,
+    /// Waiting for receiver to accept caption (`sendWaitingAccept`).
+    pub send_waiting_accept: String,
+    /// Copied code feedback (`sendCopied`).
+    pub send_copied: String,
+    /// Active send progress label (`sendSending`).
+    pub send_sending: String,
+    /// Send complete heading (`sendDone`).
+    pub send_done: String,
+    /// File/folder picker title (`pickTitle`).
+    pub pick_title: String,
+    /// Send text mode title/button (`sendText`).
+    pub send_text: String,
+    /// Send text box placeholder (`sendTextHint`).
+    pub send_text_hint: String,
+    /// Text sent confirmation (`sendTextDone`).
+    pub send_text_done: String,
+    /// Long outgoing text preview notice (`sendTextShortened`).
+    pub send_text_shortened: String,
+    /// Outgoing text hidden-characters notice (`sendTextHidden`).
+    pub send_text_hidden: String,
+    /// Send clipboard action (`sendClipboard`).
+    pub send_clipboard: String,
+    /// Clipboard empty notice (`sendClipboardEmpty`).
+    pub send_clipboard_empty: String,
+    /// Existing text kept notice (`sendClipboardKept`).
+    pub send_clipboard_kept: String,
+    /// Receive code helper text (`receiveCodeHelp`).
+    pub receive_code_help: String,
+    /// Invalid typed code hint (`receiveCodeInvalid`).
+    pub receive_code_invalid: String,
+    /// Connecting status (`receiveConnecting`).
+    pub receive_connecting: String,
+    /// Incoming files offer title (`receiveOffer`).
+    pub receive_offer: String,
+    /// Incoming text offer title (`receiveOfferText`).
+    pub receive_offer_text: String,
+    /// In-memory received text note (`receiveOfferTextNote`).
+    pub receive_offer_text_note: String,
+    /// Files declined confirmation (`receiveDeclined`).
+    pub receive_declined: String,
+    /// Text declined confirmation (`receiveTextDeclined`).
+    pub receive_text_declined: String,
+    /// Active receive progress label (`receiveReceiving`).
+    pub receive_receiving: String,
+    /// Receive complete heading (`receiveDone`).
+    pub receive_done: String,
+    /// Receive text complete heading (`receiveTextDone`).
+    pub receive_text_done: String,
+    /// Long received text preview notice (`receiveTextShortened`).
+    pub receive_text_shortened: String,
+    /// Received text hidden-characters notice (`receiveTextHidden`).
+    pub receive_text_hidden: String,
+    /// Copy received text button (`copyText`).
+    pub copy_text: String,
+    /// Received text copied feedback (`textCopied`).
+    pub text_copied: String,
+    /// Autocomplete suggestions label (`codeSuggestions`).
+    pub code_suggestions: String,
+    /// Settings server heading (`settingsServer`).
+    pub settings_server: String,
+    /// Settings server help (`settingsServerHelp`).
+    pub settings_server_help: String,
+    /// Settings server reset button (`settingsServerReset`).
+    pub settings_server_reset: String,
+    /// Settings invalid server hint (`settingsServerInvalid`).
+    pub settings_server_invalid: String,
+    /// Settings save button (`settingsSave`).
+    pub settings_save: String,
+    /// Settings about heading (`settingsAbout`).
+    pub settings_about: String,
+    /// Settings about body (`settingsAboutBody`).
+    pub settings_about_body: String,
+    /// Settings privacy heading (`settingsPrivacy`).
+    pub settings_privacy: String,
+    /// Settings privacy body (`settingsPrivacyBody`).
+    pub settings_privacy_body: String,
+    /// Privacy mode toggle label (`privacyMode`).
+    pub privacy_mode: String,
+    /// Privacy mode explanation (`privacyModeHint`).
+    pub privacy_mode_hint: String,
+    /// Privacy mode dialog title (`privacyModeConfirmTitle`).
+    pub privacy_mode_confirm_title: String,
+    /// Privacy mode dialog body (`privacyModeConfirmBody`).
+    pub privacy_mode_confirm_body: String,
+    /// Privacy mode confirm button (`privacyModeTurnOn`).
+    pub privacy_mode_turn_on: String,
+    /// Draft translation notice (`draftTranslation`).
+    pub draft_translation: String,
+    /// English wordlist explanation (`settingsWordsEnglish`).
+    pub settings_words_english: String,
+    /// Invalid activation link/code error (`errorInvalidCode`).
+    pub error_invalid_code: String,
+    /// Safety-critical wrong code error (`errorWrongCode`, English until reviewed).
+    pub error_wrong_code: String,
+    /// Safety-critical invalid offer error (`errorInvalidOffer`, English until reviewed).
+    pub error_invalid_offer: String,
+    /// Damaged incoming text error (`errorTextDamaged`).
+    pub error_text_damaged: String,
+    /// Invalid server URL error (`errorBadServer`).
+    pub error_bad_server: String,
+    /// Expired sender code error (`errorCodeExpired`).
+    pub error_code_expired: String,
+    /// Unknown/used receiver code error (`errorCodeNotInUse`).
+    pub error_code_not_in_use: String,
+    /// Generic fallback error (`errorOther`).
+    pub error_other: String,
+    /// Busy window share notice (`shareBusy`).
+    pub share_busy: String,
+    /// Busy window link notice (`linkBusy`).
+    pub link_busy: String,
 }
 
 /// Computes the whole transfer percentage in `0..=100`, rounding **down** so
@@ -387,10 +547,27 @@ impl WindowsLocalizer {
         totaldrop_l10n::needs_english(self.strings.tag(), key)
     }
 
+    /// Returns `true` when `key` is a known `l10n/app` message identifier.
+    #[must_use]
+    pub fn has_key(&self, key: &str) -> bool {
+        !key.is_empty() && self.strings.keys().contains(key)
+    }
+
     /// Formats a simple message key without placeholders.
     #[must_use]
     pub fn text(&self, key: &str) -> String {
         self.strings.get(key, &[])
+    }
+
+    /// Formats a known `l10n/app` message key with ICU plural/select/text
+    /// arguments while enforcing `l10n/status.json`'s 11-key critical security
+    /// English gate. Returns `None` if `key` is empty or unknown.
+    #[must_use]
+    pub fn format_message(&self, key: &str, args: &[(&str, Arg<'_>)]) -> Option<String> {
+        if !self.has_key(key) {
+            return None;
+        }
+        Some(self.strings.get(key, args))
     }
 
     /// Formats a byte count using TotalDrop's regional SI unit rules (`"0 B"`,
@@ -462,6 +639,86 @@ impl WindowsLocalizer {
             cancel: t("cancel"),
             keep_awake_reason: t("keepAwakeReason"),
             version_label,
+            desktop_generic_name: t("desktopGenericName"),
+            home_send_title: t("homeSendTitle"),
+            home_send_body: t("homeSendBody"),
+            home_receive_title: t("homeReceiveTitle"),
+            home_receive_body: t("homeReceiveBody"),
+            home_footer: t("homeFooter"),
+            same_network_note: t("sameNetworkNote"),
+            done: t("done"),
+            try_again: t("tryAgain"),
+            back: t("back"),
+            stop: t("stop"),
+            keep_going: t("keepGoing"),
+            more_info: t("moreInfo"),
+            open_folder: t("openFolder"),
+            cancel_transfer_title: t("cancelTransferTitle"),
+            cancel_transfer_body: t("cancelTransferBody"),
+            technical_detail: t("technicalDetail"),
+            send_empty: t("sendEmpty"),
+            send_empty_hint: t("sendEmptyHint"),
+            send_counting: t("sendCounting"),
+            send_remove: t("sendRemove"),
+            send_preparing: t("sendPreparing"),
+            send_add_failed: t("sendAddFailed"),
+            send_code_hint: t("sendCodeHint"),
+            send_waiting: t("sendWaiting"),
+            send_waiting_accept: t("sendWaitingAccept"),
+            send_copied: t("sendCopied"),
+            send_sending: t("sendSending"),
+            send_done: t("sendDone"),
+            pick_title: t("pickTitle"),
+            send_text: t("sendText"),
+            send_text_hint: t("sendTextHint"),
+            send_text_done: t("sendTextDone"),
+            send_text_shortened: t("sendTextShortened"),
+            send_text_hidden: t("sendTextHidden"),
+            send_clipboard: t("sendClipboard"),
+            send_clipboard_empty: t("sendClipboardEmpty"),
+            send_clipboard_kept: t("sendClipboardKept"),
+            receive_code_help: t("receiveCodeHelp"),
+            receive_code_invalid: t("receiveCodeInvalid"),
+            receive_connecting: t("receiveConnecting"),
+            receive_offer: t("receiveOffer"),
+            receive_offer_text: t("receiveOfferText"),
+            receive_offer_text_note: t("receiveOfferTextNote"),
+            receive_declined: t("receiveDeclined"),
+            receive_text_declined: t("receiveTextDeclined"),
+            receive_receiving: t("receiveReceiving"),
+            receive_done: t("receiveDone"),
+            receive_text_done: t("receiveTextDone"),
+            receive_text_shortened: t("receiveTextShortened"),
+            receive_text_hidden: t("receiveTextHidden"),
+            copy_text: t("copyText"),
+            text_copied: t("textCopied"),
+            code_suggestions: t("codeSuggestions"),
+            settings_server: t("settingsServer"),
+            settings_server_help: t("settingsServerHelp"),
+            settings_server_reset: t("settingsServerReset"),
+            settings_server_invalid: t("settingsServerInvalid"),
+            settings_save: t("settingsSave"),
+            settings_about: t("settingsAbout"),
+            settings_about_body: t("settingsAboutBody"),
+            settings_privacy: t("settingsPrivacy"),
+            settings_privacy_body: t("settingsPrivacyBody"),
+            privacy_mode: t("privacyMode"),
+            privacy_mode_hint: t("privacyModeHint"),
+            privacy_mode_confirm_title: t("privacyModeConfirmTitle"),
+            privacy_mode_confirm_body: t("privacyModeConfirmBody"),
+            privacy_mode_turn_on: t("privacyModeTurnOn"),
+            draft_translation: t("draftTranslation"),
+            settings_words_english: t("settingsWordsEnglish"),
+            error_invalid_code: t("errorInvalidCode"),
+            error_wrong_code: t("errorWrongCode"),
+            error_invalid_offer: t("errorInvalidOffer"),
+            error_text_damaged: t("errorTextDamaged"),
+            error_bad_server: t("errorBadServer"),
+            error_code_expired: t("errorCodeExpired"),
+            error_code_not_in_use: t("errorCodeNotInUse"),
+            error_other: t("errorOther"),
+            share_busy: t("shareBusy"),
+            link_busy: t("linkBusy"),
         }
     }
 }

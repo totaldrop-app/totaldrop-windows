@@ -35,9 +35,10 @@ pub mod session;
 pub mod uri;
 
 pub use activation::{
-    ActivationEnvelope, ActivationError, ActivationPayload, ExplorerLaunchTransport, ScreenTarget,
-    WindowsRootKind, WindowsSelectionPath, parse_launch_args, plan_explorer_invocation,
-    quote_win32_arg, session_named_pipe_path, split_win32_command_line,
+    ActivationEnvelope, ActivationError, ActivationPayload, ExplorerLaunchTransport,
+    NormalizedWindowsPath, ScreenTarget, WindowsRootKind, WindowsSelectionPath, parse_launch_args,
+    plan_explorer_invocation, quote_win32_arg, session_named_pipe_path, split_win32_command_line,
+    validate_windows_paths,
 };
 pub use ipc_router::{
     IpcFrameDecoder, MAX_IPC_FRAME_BYTES, RouterDecision, WinUiBridgeMessage, WinUiWindowRouter,
@@ -52,9 +53,10 @@ pub use l10n::{
 pub use session::{
     BridgeNetworkConfig, LocalizedTransferError, MARK_CYCLE_MS, MARK_HEX_DARK, MARK_HEX_LIGHT,
     MARK_QUARTER_MS, MARK_SVG_PATH, TransferViewEvent, WindowsCancellationToken,
-    connect_windows_receive, prepare_windows_send, prepare_windows_text_send, should_animate_mark,
+    check_windows_destination, connect_windows_receive, prepare_windows_send,
+    prepare_windows_text_send, should_animate_mark,
 };
-pub use uri::{UriValidationError, ValidatedCode};
+pub use uri::{UriValidationError, ValidatedCode, code_word_completions};
 
 #[cfg(test)]
 mod tests {
@@ -231,6 +233,21 @@ mod tests {
             assert!(
                 WindowsSelectionPath::parse(forbidden).is_err(),
                 "path must be rejected: {forbidden:?}"
+            );
+        }
+
+        // Case-insensitive verbatim device namespaces must return exact DeviceNamespaceForbidden.
+        for device_path in [
+            r"\\?\globalroot\Device\Harddisk0",
+            r"\\?\GlobalRoot\Device\Harddisk0",
+            r"\\?\volume{01234567-89ab-cdef-0123-456789abcdef}\secret.txt",
+            r"\\?\PIPE\app.totaldrop.TotalDrop",
+            r"\\?\pipe\foo",
+        ] {
+            assert_eq!(
+                WindowsSelectionPath::parse(device_path),
+                Err(ActivationError::DeviceNamespaceForbidden),
+                "expected DeviceNamespaceForbidden for {device_path:?}"
             );
         }
     }
@@ -578,7 +595,10 @@ mod tests {
             }
         );
 
-        let err = LocalizedTransferError::from_core_error(&CoreError::WrongCode, &localizer);
+        let err = LocalizedTransferError::from_core_error(&CoreError::WrongCode, &localizer, false);
+        assert_eq!(err.kind, "wrong_code");
+        assert_eq!(err.l10n_key, "errorWrongCode");
+        assert!(err.cause.is_empty());
         assert!(err.summary.contains("code did not match"));
         assert!(err.technical_english.contains("code did not match"));
 
@@ -586,6 +606,184 @@ mod tests {
         assert!(should_animate_mark(true, true));
         assert!(!should_animate_mark(true, false));
         assert!(!should_animate_mark(false, true));
+    }
+
+    #[test]
+    fn rendezvous_url_validation_delegates_strictly_to_core_check_url() {
+        for valid in [
+            "wss://rendezvous.totaldrop.app",
+            "  wss://relay.example.org/v0/relay  ",
+            "wss://relay.example.org:443/v0/relay",
+            "wss://[2001:db8::1]:8443/v0/relay",
+            "ws://127.0.0.1:4000",
+            "ws://localhost:4000",
+            "ws://[::1]:4000",
+            "ws://[::1]",
+        ] {
+            assert!(
+                BridgeNetworkConfig::is_valid_rendezvous_url(valid),
+                "expected valid URL: {valid:?}"
+            );
+        }
+
+        for invalid in [
+            "",
+            "   ",
+            "wss://",
+            "wss:///",
+            "wss://user@rendezvous.totaldrop.app",
+            "ws://localhost@evil.example:4000",
+            "wss://host /bad",
+            "wss://rendezvous.totaldrop.app\n",
+            "http://127.0.0.1:4000",
+            "https://rendezvous.totaldrop.app",
+            "ws://192.168.1.10:4000",
+            "ws://127.0.0.1.evil.com:4000",
+            "ws://0.0.0.0:4000",
+            // Authority, IPv6, port, and RFC 6455 fragment bypass vectors:
+            "wss://:443",
+            "wss://:",
+            "wss://:0",
+            "wss://:443/v0/allocate",
+            "wss://[]:443",
+            "wss://[::1]garbage",
+            "wss://example.invalid:",
+            "wss://example.invalid:99999",
+            "wss://example.invalid:abc",
+            "wss://example.invalid:0",
+            "wss://example.invalid#frag",
+            "ws://127.0.0.1:99999",
+            "ws://127.0.0.1:abc",
+            "ws://localhost:99999",
+            "ws://localhost:abc",
+            "ws://localhost#frag",
+        ] {
+            assert!(
+                !BridgeNetworkConfig::is_valid_rendezvous_url(invalid),
+                "expected invalid URL: {invalid:?}"
+            );
+        }
+
+        let cfg = BridgeNetworkConfig {
+            rendezvous_server: "  ws://127.0.0.1:4000  ".to_owned(),
+            relay_server: "  ws://127.0.0.1:4001/v0/relay ".to_owned(),
+            stun_server: "  ".to_owned(),
+            privacy_relay_only: true,
+            stronger_three_word_code: false,
+        };
+        assert_eq!(cfg.to_send_options().server, "ws://127.0.0.1:4000");
+        assert_eq!(
+            cfg.to_receive_options().paths.relay,
+            "ws://127.0.0.1:4001/v0/relay"
+        );
+        assert_eq!(cfg.to_path_options().stun, "");
+    }
+
+    #[test]
+    fn localized_transfer_error_distinguishes_sender_vs_receiver_bad_server_and_text_errors() {
+        let en = WindowsLocalizer::new(["en-US"], Some("en-US"));
+
+        let expired_sender = LocalizedTransferError::from_core_error(
+            &CoreError::Rendezvous("mailbox expired".into()),
+            &en,
+            true,
+        );
+        assert_eq!(expired_sender.kind, "code_expired");
+        assert_eq!(expired_sender.l10n_key, "errorCodeExpired");
+        assert!(expired_sender.cause.is_empty());
+
+        let missing_receiver = LocalizedTransferError::from_core_error(
+            &CoreError::Rendezvous("unknown nameplate".into()),
+            &en,
+            false,
+        );
+        assert_eq!(missing_receiver.kind, "code_not_in_use");
+        assert_eq!(missing_receiver.l10n_key, "errorCodeNotInUse");
+
+        let full_receiver = LocalizedTransferError::from_core_error(
+            &CoreError::Rendezvous("nameplate full".into()),
+            &en,
+            false,
+        );
+        assert_eq!(full_receiver.kind, "code_not_in_use");
+        assert_eq!(full_receiver.l10n_key, "errorCodeNotInUse");
+
+        let bad_srv = LocalizedTransferError::from_core_error(
+            &CoreError::Rendezvous("the server address must start with wss://".into()),
+            &en,
+            false,
+        );
+        assert_eq!(bad_srv.kind, "bad_server");
+        assert_eq!(bad_srv.l10n_key, "errorBadServer");
+
+        let generic_srv = LocalizedTransferError::from_core_error(
+            &CoreError::Rendezvous("rate limit exceeded".into()),
+            &en,
+            false,
+        );
+        assert_eq!(generic_srv.kind, "server");
+        assert_eq!(generic_srv.l10n_key, "errorServer");
+
+        let auth_err = LocalizedTransferError::from_core_error(
+            &CoreError::Protocol("message failed authentication"),
+            &en,
+            false,
+        );
+        assert_eq!(auth_err.kind, "protocol");
+        assert_eq!(auth_err.l10n_key, "errorOther");
+        assert_eq!(auth_err.cause, "");
+        assert_eq!(auth_err.cause_detail, None);
+
+        let damaged = LocalizedTransferError::text_damaged(&en);
+        assert_eq!(damaged.kind, "text_damaged");
+        assert_eq!(damaged.l10n_key, "errorTextDamaged");
+        assert_eq!(damaged.cause, "");
+        assert_eq!(damaged.technical_english, "the text failed its check");
+
+        let too_long = LocalizedTransferError::text_too_long(&en);
+        assert_eq!(too_long.kind, "text_too_long");
+        assert_eq!(too_long.l10n_key, "sendTextTooLong");
+        assert!(too_long.technical_english.contains("1048576"));
+
+        // Critical error keys stay English on unreviewed locales (e.g. de).
+        let de = WindowsLocalizer::new(["de-DE"], Some("de-DE"));
+        let de_wrong = LocalizedTransferError::from_core_error(&CoreError::WrongCode, &de, false);
+        assert_eq!(de_wrong.l10n_key, "errorWrongCode");
+        assert_eq!(de_wrong.summary, en.text("errorWrongCode"));
+    }
+
+    #[test]
+    fn code_word_completions_and_path_validation_and_format_message_work() -> TestResult {
+        assert_eq!(code_word_completions("harb", 4), vec!["harbor"]);
+        assert_eq!(code_word_completions("  HARB ", 4), vec!["harbor"]);
+        assert!(code_word_completions("", 4).is_empty());
+        assert!(code_word_completions("12", 4).is_empty());
+        assert!(code_word_completions("Ä", 4).is_empty());
+        assert!(code_word_completions("zz", 4).is_empty());
+        assert!(code_word_completions("ab", 0).is_empty());
+        assert_eq!(code_word_completions("ab", 2).len(), 2);
+
+        let paths = validate_windows_paths([
+            r"\\nas01\team\Spec.docx",
+            r"\\NAS01\team\spec.docx",
+            r"c:\Users\Alice\report.pdf",
+        ])?;
+        assert_eq!(paths.len(), 2);
+        let first = paths.first().ok_or("missing first path")?;
+        assert_eq!(first.extended_path, r"\\?\UNC\nas01\team\Spec.docx");
+        assert_eq!(first.unprefixed_path, r"\\nas01\team\Spec.docx");
+        assert_eq!(first.root_kind, WindowsRootKind::Unc);
+
+        let en = WindowsLocalizer::new(["en-US"], Some("en-US"));
+        assert!(en.has_key("sendDoneBody"));
+        assert!(!en.has_key(""));
+        assert!(!en.has_key("nonexistentKey123"));
+        assert_eq!(en.format_message("nonexistentKey123", &[]), None);
+        assert_eq!(
+            en.format_message("sendDoneBody", &[("count", totaldrop_l10n::Arg::Count(3))]),
+            Some("All 3 files arrived intact.".to_owned())
+        );
+        Ok(())
     }
 
     #[test]

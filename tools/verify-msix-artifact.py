@@ -25,18 +25,42 @@ EXPECTED_CORE_VERSION = "0.2.0-beta.5"
 EXPECTED_MSIX_VERSION = "0.1.1.0"
 
 REQUIRED_FFI_EXPORTS: tuple[str, ...] = (
+    # Phase 1 (6 exports)
     "totaldrop_win_string_free",
     "totaldrop_win_version_json",
     "totaldrop_win_validate_uri_json",
     "totaldrop_win_validate_input_json",
     "totaldrop_win_format_percent_json",
     "totaldrop_win_ui_bundle_json",
+    # Phase 2 Group A (8 exports)
+    "totaldrop_win_extract_clipboard_code_json",
+    "totaldrop_win_code_completions_json",
+    "totaldrop_win_format_bytes_json",
+    "totaldrop_win_format_message_json",
+    "totaldrop_win_sanitize_filename_json",
+    "totaldrop_win_sanitize_text_json",
+    "totaldrop_win_validate_server_url_json",
+    "totaldrop_win_validate_paths_json",
+    # Phase 2 Group B (10 exports)
+    "totaldrop_win_send_files_start",
+    "totaldrop_win_send_text_start",
+    "totaldrop_win_receive_connect_start",
+    "totaldrop_win_receive_accept_files",
+    "totaldrop_win_receive_accept_text",
+    "totaldrop_win_receive_decline",
+    "totaldrop_win_session_poll_events_ndjson",
+    "totaldrop_win_session_cancel",
+    "totaldrop_win_session_destroy",
+    "totaldrop_win_shutdown",
 )
 
 FORBIDDEN_CRT_DLLS: tuple[str, ...] = (
     "vcruntime140.dll",
     "vcruntime140_1.dll",
     "msvcp140.dll",
+    "concrt140.dll",
+    "vcomp140.dll",
+    "ucrtbased.dll",
 )
 
 
@@ -106,6 +130,80 @@ lib.totaldrop_win_ui_bundle_json.argtypes = [
 ]
 lib.totaldrop_win_ui_bundle_json.restype = ctypes.c_void_p
 
+lib.totaldrop_win_extract_clipboard_code_json.argtypes = [ctypes.c_char_p]
+lib.totaldrop_win_extract_clipboard_code_json.restype = ctypes.c_void_p
+
+lib.totaldrop_win_code_completions_json.argtypes = [ctypes.c_char_p, ctypes.c_uint32]
+lib.totaldrop_win_code_completions_json.restype = ctypes.c_void_p
+
+lib.totaldrop_win_format_bytes_json.argtypes = [ctypes.c_uint64, ctypes.c_char_p, ctypes.c_char_p]
+lib.totaldrop_win_format_bytes_json.restype = ctypes.c_void_p
+
+lib.totaldrop_win_format_message_json.argtypes = [
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+]
+lib.totaldrop_win_format_message_json.restype = ctypes.c_void_p
+
+lib.totaldrop_win_sanitize_filename_json.argtypes = [ctypes.c_char_p]
+lib.totaldrop_win_sanitize_filename_json.restype = ctypes.c_void_p
+
+lib.totaldrop_win_sanitize_text_json.argtypes = [ctypes.c_char_p]
+lib.totaldrop_win_sanitize_text_json.restype = ctypes.c_void_p
+
+lib.totaldrop_win_validate_server_url_json.argtypes = [ctypes.c_char_p]
+lib.totaldrop_win_validate_server_url_json.restype = ctypes.c_void_p
+
+lib.totaldrop_win_validate_paths_json.argtypes = [ctypes.c_char_p]
+lib.totaldrop_win_validate_paths_json.restype = ctypes.c_void_p
+
+lib.totaldrop_win_send_files_start.argtypes = [
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+]
+lib.totaldrop_win_send_files_start.restype = ctypes.c_uint64
+
+lib.totaldrop_win_send_text_start.argtypes = [
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+]
+lib.totaldrop_win_send_text_start.restype = ctypes.c_uint64
+
+lib.totaldrop_win_receive_connect_start.argtypes = [
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+]
+lib.totaldrop_win_receive_connect_start.restype = ctypes.c_uint64
+
+lib.totaldrop_win_receive_accept_files.argtypes = [ctypes.c_uint64, ctypes.c_char_p]
+lib.totaldrop_win_receive_accept_files.restype = ctypes.c_int32
+
+lib.totaldrop_win_receive_accept_text.argtypes = [ctypes.c_uint64]
+lib.totaldrop_win_receive_accept_text.restype = ctypes.c_int32
+
+lib.totaldrop_win_receive_decline.argtypes = [ctypes.c_uint64]
+lib.totaldrop_win_receive_decline.restype = ctypes.c_int32
+
+lib.totaldrop_win_session_poll_events_ndjson.argtypes = [ctypes.c_uint64]
+lib.totaldrop_win_session_poll_events_ndjson.restype = ctypes.c_void_p
+
+lib.totaldrop_win_session_cancel.argtypes = [ctypes.c_uint64]
+lib.totaldrop_win_session_cancel.restype = ctypes.c_int32
+
+lib.totaldrop_win_session_destroy.argtypes = [ctypes.c_uint64]
+lib.totaldrop_win_session_destroy.restype = ctypes.c_int32
+
+lib.totaldrop_win_shutdown.argtypes = [ctypes.c_uint32]
+lib.totaldrop_win_shutdown.restype = ctypes.c_int32
+
 
 def take_json(ptr):
     if not ptr:
@@ -145,6 +243,54 @@ ar_bundle = take_json(lib.totaldrop_win_ui_bundle_json(b"ar-SA,en-US", b"ar-EG",
 assert ar_bundle.get("language_tag") == "ar", f"unexpected ar bundle: {ar_bundle}"
 assert ar_bundle.get("flow_direction") == "RightToLeft"
 assert ar_bundle.get("verification_title") == "Verification words"
+
+clip_ok = take_json(lib.totaldrop_win_extract_clipboard_code_json(b"Code: 7-harbor-rocket"))
+assert clip_ok.get("display_english") == "7-harbor-rocket", f"unexpected clipboard ok: {clip_ok}"
+
+comp_ok = take_json(lib.totaldrop_win_code_completions_json(b"harb", 4))
+assert comp_ok == ["harbor"], f"unexpected completions: {comp_ok}"
+
+bytes_de = take_json(lib.totaldrop_win_format_bytes_json(1_500_000, b"en-US", b"de-DE"))
+assert bytes_de == {"bytes": 1_500_000, "formatted": "1,5 MB"}, f"unexpected bytes JSON: {bytes_de}"
+
+msg_ok = take_json(
+    lib.totaldrop_win_format_message_json(
+        b"sendDoneBody", b'{"count":3}', b"en-US", b"en-US"
+    )
+)
+assert msg_ok.get("formatted") == "All 3 files arrived intact.", f"unexpected message JSON: {msg_ok}"
+
+fn_ok = take_json(lib.totaldrop_win_sanitize_filename_json("invoice\u202efdp.exe".encode("utf-8")))
+assert fn_ok.get("has_hidden_controls") is True and "<U+202E>" in fn_ok.get("sanitized", "")
+
+txt_ok = take_json(lib.totaldrop_win_sanitize_text_json(b"hello\r\nworld"))
+assert txt_ok == {"display_text": "hello\nworld", "shortened": False, "has_hidden_controls": False}
+
+srv_ok = take_json(lib.totaldrop_win_validate_server_url_json(b"wss://rendezvous.totaldrop.app"))
+assert srv_ok == {"ok": True}, f"unexpected server url ok: {srv_ok}"
+
+srv_bad = take_json(lib.totaldrop_win_validate_server_url_json(b"wss://user@host"))
+assert srv_bad.get("ok") is False and srv_bad.get("error", {}).get("l10n_key") == "errorBadServer"
+
+paths_ok = take_json(
+    lib.totaldrop_win_validate_paths_json(b'["\\\\\\\\nas01\\\\team\\\\spec.docx"]')
+)
+assert len(paths_ok) == 1 and paths_ok[0].get("extended_path") == r"\\?\UNC\nas01\team\spec.docx"
+
+assert lib.totaldrop_win_send_files_start(None, None, None, None) == 0
+assert lib.totaldrop_win_send_text_start(None, None, None, None) == 0
+assert lib.totaldrop_win_receive_connect_start(None, None, None, None) == 0
+assert lib.totaldrop_win_receive_accept_files(0, None) == -1
+assert lib.totaldrop_win_receive_accept_files(0, b"C:\\Downloads") == -3
+assert lib.totaldrop_win_receive_accept_text(0) == -3
+assert lib.totaldrop_win_receive_decline(0) == -3
+poll_bad = take_json(lib.totaldrop_win_session_poll_events_ndjson(0))
+assert poll_bad.get("ok") is False and poll_bad.get("error", {}).get("kind") == "invalid_handle", (
+    f"unexpected poll invalid_handle JSON: {poll_bad}"
+)
+assert lib.totaldrop_win_session_cancel(0) == -3
+assert lib.totaldrop_win_session_destroy(0) == -3
+assert lib.totaldrop_win_shutdown(100) == 0
 """
 
 
@@ -320,6 +466,7 @@ def verify_pri_dump(pri_dump_path: Path) -> None:
         "MainWindow.xbf",
         "SendPage.xbf",
         "ReceivePage.xbf",
+        "SettingsPage.xbf",
     )
     missing = [tok for tok in required_tokens if tok not in text]
     for qualifier in ("UNPLATED", "LIGHTUNPLATED"):
@@ -404,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
             "MainWindow.xbf",
             "Views/SendPage.xbf",
             "Views/ReceivePage.xbf",
+            "Views/SettingsPage.xbf",
         }
         if args.expect_signed:
             required.add("AppxSignature.p7x")
@@ -512,7 +660,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"totaldrop_windows_ffi.dll links dynamic MSVC CRT DLL(s): {bad_crt}"
                 )
 
-            # Verify all 6 Phase 1 C ABI exports exist.
+            # Verify all 24 Phase 1 + Phase 2 C ABI exports exist.
             exports = set(ffi_pe["exports"])  # type: ignore[arg-type]
             missing_exports = [sym for sym in REQUIRED_FFI_EXPORTS if sym not in exports]
             if missing_exports:
@@ -537,7 +685,7 @@ def main(argv: list[str] | None = None) -> int:
         f"msix-artifact verify OK: {msix_path.name} ({msix_path.stat().st_size} bytes, "
         f"arch={args.arch}, version={args.expected_version}, 46 canonical Assets, "
         f"PE hardening + CET_COMPAT + DependentLoadFlags=0x800 + zero VCRUNTIME140 + "
-        f"6 C ABI exports + Native AOT verified)."
+        f"{len(REQUIRED_FFI_EXPORTS)} C ABI exports + Native AOT verified)."
     )
     return 0
 

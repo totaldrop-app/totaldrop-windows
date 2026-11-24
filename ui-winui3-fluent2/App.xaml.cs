@@ -133,9 +133,7 @@ public partial class App : Application
                 {
                     if (!string.IsNullOrWhiteSpace(item.Path))
                     {
-                        paths.Add(item.Path.StartsWith(@"\\?\", StringComparison.Ordinal)
-                            ? item.Path
-                            : @"\\?\" + item.Path);
+                        paths.Add(item.Path);
                     }
                 }
 
@@ -236,6 +234,16 @@ public partial class App : Application
         _ipcCts?.Cancel();
         _ipcCts?.Dispose();
         _ipcCts = null;
+        _mainWindow?.ShutdownActiveSessions();
+        try
+        {
+            _ = NativeBridge.Shutdown(1500);
+        }
+        catch (DllNotFoundException)
+        {
+            // Design-time preview without staged native DLL.
+        }
+
         NativeBridge.SetThreadExecutionState(NativeBridge.ExecutionState.Continuous);
     }
 }

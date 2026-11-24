@@ -1738,8 +1738,18 @@ dependencies = [
 name = "totaldrop-windows-ffi"
 version = "0.1.0-beta.1"
 dependencies = [
+ "blake3",
+ "futures-util",
+ "quinn",
+ "ring",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "totaldrop-core",
+ "totaldrop-crypto",
+ "totaldrop-l10n",
+ "totaldrop-proto",
  "totaldrop-windows-bridge",
 ]
 

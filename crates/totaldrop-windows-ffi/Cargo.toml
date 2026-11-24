@@ -18,7 +18,19 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+totaldrop-core = { version = "0.2.0-beta.5", path = "../totaldrop-core" }
+totaldrop-l10n = { version = "0.2.0-beta.5", path = "../totaldrop-l10n" }
+totaldrop-proto = { version = "0.2.0-beta.5", path = "../totaldrop-proto" }
 totaldrop-windows-bridge = { version = "0.2.0-beta.5", path = "../totaldrop-windows-bridge" }
+
+[dev-dependencies]
+blake3 = "1.8.7"
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+ring = "0.17.14"
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+totaldrop-crypto = { version = "0.2.0-beta.5", path = "../totaldrop-crypto" }
 
 [lints.rust]
 missing_docs = "warn"

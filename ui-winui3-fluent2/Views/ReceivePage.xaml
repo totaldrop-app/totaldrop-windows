@@ -4,19 +4,57 @@
     x:Class="TotalDrop.WinUI.Views.ReceivePage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    AutomationProperties.Name="Receive files">
+    xmlns:vm="using:TotalDrop.WinUI.ViewModels"
+    PreviewKeyDown="OnPagePreviewKeyDown"
+    AutomationProperties.Name="{x:Bind ViewModel.Strings.ReceiveTitle, Mode=OneWay}">
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <Page.Resources>
+        <Storyboard x:Name="ReceiveKoseStoryboard" RepeatBehavior="Forever">
+            <DoubleAnimationUsingKeyFrames
+                Storyboard.TargetName="ReceiveKoseRotate"
+                Storyboard.TargetProperty="Angle"
+                Duration="0:0:3.2">
+                <SplineDoubleKeyFrame KeyTime="0:0:0.6" Value="90">
+                    <SplineDoubleKeyFrame.KeySpline>
+                        <KeySpline ControlPoint1="0.65,0" ControlPoint2="0.35,1" />
+                    </SplineDoubleKeyFrame.KeySpline>
+                </SplineDoubleKeyFrame>
+                <LinearDoubleKeyFrame KeyTime="0:0:0.8" Value="90" />
+                <SplineDoubleKeyFrame KeyTime="0:0:1.4" Value="180">
+                    <SplineDoubleKeyFrame.KeySpline>
+                        <KeySpline ControlPoint1="0.65,0" ControlPoint2="0.35,1" />
+                    </SplineDoubleKeyFrame.KeySpline>
+                </SplineDoubleKeyFrame>
+                <LinearDoubleKeyFrame KeyTime="0:0:1.6" Value="180" />
+                <SplineDoubleKeyFrame KeyTime="0:0:2.2" Value="270">
+                    <SplineDoubleKeyFrame.KeySpline>
+                        <KeySpline ControlPoint1="0.65,0" ControlPoint2="0.35,1" />
+                    </SplineDoubleKeyFrame.KeySpline>
+                </SplineDoubleKeyFrame>
+                <LinearDoubleKeyFrame KeyTime="0:0:2.4" Value="270" />
+                <SplineDoubleKeyFrame KeyTime="0:0:3.0" Value="360">
+                    <SplineDoubleKeyFrame.KeySpline>
+                        <KeySpline ControlPoint1="0.65,0" ControlPoint2="0.35,1" />
+                    </SplineDoubleKeyFrame.KeySpline>
+                </SplineDoubleKeyFrame>
+                <LinearDoubleKeyFrame KeyTime="0:0:3.2" Value="360" />
+            </DoubleAnimationUsingKeyFrames>
+        </Storyboard>
+    </Page.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Spacing="16" MaxWidth="640">
 
             <TextBlock
-                Text="Receive files"
+                Text="{x:Bind ViewModel.Strings.ReceiveTitle, Mode=OneWay}"
                 Style="{StaticResource TitleTextBlockStyle}"
                 TextWrapping="Wrap"
+                IsTextScaleFactorEnabled="True"
                 AutomationProperties.HeadingLevel="Level1" />
 
-            <!-- Wormhole Code Entry Card: spellcheck/prediction disabled, LeftToRight in every language (ADR 0008) -->
+            <!-- Idle Stage: LTR Code Entry with BIP-39 Autocomplete + Clipboard Extract -->
             <Border
+                Visibility="{x:Bind ViewModel.IdleVisibility, Mode=OneWay}"
                 Padding="20"
                 CornerRadius="8"
                 Background="{ThemeResource TotalDropCardBackgroundBrush}"
@@ -24,9 +62,10 @@
                 BorderThickness="1">
                 <StackPanel Spacing="12">
                     <TextBlock
-                        Text="Code"
+                        Text="{x:Bind ViewModel.Strings.ReceiveCodeLabel, Mode=OneWay}"
                         Style="{StaticResource BodyStrongTextBlockStyle}"
-                        TextWrapping="Wrap" />
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True" />
 
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
@@ -34,126 +73,286 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
-                        <TextBox
+                        <AutoSuggestBox
                             x:Name="CodeInputBox"
                             Grid.Column="0"
-                            PlaceholderText="7-harbor-rocket"
-                            Text="{x:Bind ViewModel.CodeInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                            PlaceholderText="{x:Bind ViewModel.Strings.ReceiveCodeHint, Mode=OneWay}"
+                            Text="{x:Bind ViewModel.CodeInput, Mode=TwoWay}"
                             FlowDirection="LeftToRight"
                             Language="en-US"
-                            IsSpellCheckEnabled="False"
-                            IsTextPredictionEnabled="False"
-                            CharacterCasing="Normal"
                             FontFamily="Cascadia Mono, Consolas"
-                            AutomationProperties.Name="Transfer code"
-                            AutomationProperties.HelpText="Enter the sender's code, such as 7-harbor-rocket, or paste a TotalDrop share message." />
+                            Loaded="OnCodeInputBoxLoaded"
+                            TextChanged="OnCodeInputTextChanged"
+                            SuggestionChosen="OnCodeSuggestionChosen"
+                            QuerySubmitted="OnCodeQuerySubmitted"
+                            AutomationProperties.Name="{x:Bind ViewModel.Strings.ReceiveCodeLabel, Mode=OneWay}"
+                            AutomationProperties.HelpText="{x:Bind ViewModel.Strings.ReceiveCodeHelp, Mode=OneWay}" />
 
                         <Button
+                            x:Name="PasteCodeButton"
                             Grid.Column="1"
-                            Content="Paste"
                             Click="OnPasteClick"
-                            AutomationProperties.Name="Paste transfer code from clipboard" />
+                            AutomationProperties.Name="{x:Bind ViewModel.Strings.ReceivePaste, Mode=OneWay}">
+                            <TextBlock
+                                Text="{x:Bind ViewModel.Strings.ReceivePaste, Mode=OneWay}"
+                                TextWrapping="Wrap"
+                                IsTextScaleFactorEnabled="True" />
+                        </Button>
                     </Grid>
+
+                    <TextBlock
+                        Text="{x:Bind ViewModel.Strings.ReceiveCodeHelp, Mode=OneWay}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True" />
 
                     <TextBlock
                         Text="{x:Bind ViewModel.ValidationMessage, Mode=OneWay}"
                         Visibility="{x:Bind ViewModel.ValidationVisibility, Mode=OneWay}"
                         Foreground="{ThemeResource SystemFillColorCriticalBrush}"
                         TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True"
                         AutomationProperties.LiveSetting="Assertive" />
 
                     <Button
+                        x:Name="ConnectButton"
                         Style="{StaticResource AccentButtonStyle}"
-                        Content="Connect"
+                        IsEnabled="{x:Bind ViewModel.CanConnect, Mode=OneWay}"
                         Click="OnConnectClick"
-                        AutomationProperties.Name="Connect securely to sender" />
+                        AutomationProperties.Name="{x:Bind ViewModel.Strings.ReceiveConnect, Mode=OneWay}">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.Strings.ReceiveConnect, Mode=OneWay}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                    </Button>
+
+                    <TextBlock
+                        Text="{x:Bind ViewModel.Strings.SameNetworkNote, Mode=OneWay}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True" />
                 </StackPanel>
             </Border>
 
-            <!-- Four Verification Words Card -->
+            <!-- Connecting Stage -->
             <Border
-                Visibility="{x:Bind ViewModel.VerificationVisibility, Mode=OneWay}"
-                Padding="16"
+                Visibility="{x:Bind ViewModel.ConnectingVisibility, Mode=OneWay}"
+                Padding="24"
                 CornerRadius="8"
                 Background="{ThemeResource TotalDropCardBackgroundBrush}"
                 BorderBrush="{ThemeResource TotalDropCardStrokeBrush}"
-                BorderThickness="1"
-                AutomationProperties.Name="Verification words">
-                <StackPanel Spacing="6">
+                BorderThickness="1">
+                <StackPanel Spacing="12" HorizontalAlignment="Center">
+                    <Viewbox
+                        Width="44"
+                        Height="44"
+                        FlowDirection="LeftToRight"
+                        AutomationProperties.AccessibilityView="Raw">
+                        <Canvas Width="112" Height="112">
+                            <Path
+                                Data="M55 15H97V57A42 42 0 1 1 55 15Z"
+                                Fill="{ThemeResource TotalDropMarkBrush}">
+                                <Path.RenderTransform>
+                                    <RotateTransform
+                                        x:Name="ReceiveKoseRotate"
+                                        CenterX="55"
+                                        CenterY="57"
+                                        Angle="0" />
+                                </Path.RenderTransform>
+                            </Path>
+                        </Canvas>
+                    </Viewbox>
+
                     <TextBlock
-                        Text="Verification words"
+                        Text="{x:Bind ViewModel.Strings.ReceiveConnecting, Mode=OneWay}"
                         Style="{StaticResource BodyStrongTextBlockStyle}"
-                        TextWrapping="Wrap" />
+                        HorizontalAlignment="Center"
+                        TextAlignment="Center"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True"
+                        AutomationProperties.LiveSetting="Polite" />
+
                     <TextBlock
-                        Text="{x:Bind ViewModel.VerificationWords, Mode=OneWay}"
+                        Text="{x:Bind ViewModel.ConnectingCode, Mode=OneWay}"
                         FlowDirection="LeftToRight"
                         Language="en-US"
                         FontFamily="Cascadia Mono, Consolas"
+                        HorizontalAlignment="Center"
                         TextWrapping="Wrap"
-                        AutomationProperties.LiveSetting="Polite" />
-                    <TextBlock
-                        Text="The other person sees the same four words. If they differ, stop."
-                        Style="{StaticResource CaptionTextBlockStyle}"
-                        TextWrapping="Wrap" />
+                        IsTextScaleFactorEnabled="True" />
+
+                    <Button
+                        x:Name="CancelConnectButton"
+                        HorizontalAlignment="Center"
+                        Click="OnCancelReceiveClick"
+                        AutomationProperties.Name="{x:Bind ViewModel.Strings.Cancel, Mode=OneWay}">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.Strings.Cancel, Mode=OneWay}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                    </Button>
                 </StackPanel>
             </Border>
 
-            <!-- Incoming Offer Consent Card (safety-critical Accept/Decline buttons) -->
-            <Border
-                Visibility="{x:Bind ViewModel.OfferCardVisibility, Mode=OneWay}"
-                Padding="20"
-                CornerRadius="8"
-                Background="{ThemeResource TotalDropCardBackgroundBrush}"
-                BorderBrush="{ThemeResource TotalDropCardStrokeBrush}"
-                BorderThickness="1"
-                AutomationProperties.LandmarkType="Custom"
-                AutomationProperties.LocalizedLandmarkType="Incoming files offer"
-                AutomationProperties.Name="Incoming files offer">
-                <StackPanel Spacing="12">
-                    <TextBlock
-                        Text="Incoming files"
-                        Style="{StaticResource SubtitleTextBlockStyle}"
-                        TextWrapping="Wrap" />
-                    <TextBlock
-                        Text="{x:Bind ViewModel.OfferSummary, Mode=OneWay}"
-                        TextWrapping="Wrap"
-                        AutomationProperties.LiveSetting="Polite" />
-                    <TextBlock
-                        Text="{x:Bind ViewModel.DestinationFolder, Mode=OneWay}"
-                        Style="{StaticResource CaptionTextBlockStyle}"
-                        TextWrapping="Wrap" />
-
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button
-                            Style="{StaticResource AccentButtonStyle}"
-                            Content="Accept"
-                            Click="OnAcceptClick"
-                            AutomationProperties.Name="Accept incoming files" />
-                        <Button
-                            Content="Decline"
-                            Click="OnDeclineClick"
-                            AutomationProperties.Name="Decline incoming files" />
+            <!-- Incoming Offer Stage (Verification Words + Sanitized Summary + Destination + Accept/Decline) -->
+            <StackPanel Spacing="16" Visibility="{x:Bind ViewModel.OfferCardVisibility, Mode=OneWay}">
+                <Border
+                    Visibility="{x:Bind ViewModel.VerificationVisibility, Mode=OneWay}"
+                    Padding="16"
+                    CornerRadius="8"
+                    Background="{ThemeResource TotalDropCardBackgroundBrush}"
+                    BorderBrush="{ThemeResource TotalDropCardStrokeBrush}"
+                    BorderThickness="1"
+                    AutomationProperties.Name="{x:Bind ViewModel.Strings.VerificationTitle, Mode=OneWay}">
+                    <StackPanel Spacing="6">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.Strings.VerificationTitle, Mode=OneWay}"
+                            Style="{StaticResource BodyStrongTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                        <TextBlock
+                            Text="{x:Bind ViewModel.VerificationWords, Mode=OneWay}"
+                            FlowDirection="LeftToRight"
+                            Language="en-US"
+                            FontFamily="Cascadia Mono, Consolas"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True"
+                            AutomationProperties.LiveSetting="Polite" />
+                        <TextBlock
+                            Text="{x:Bind ViewModel.Strings.VerificationHint, Mode=OneWay}"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
                     </StackPanel>
-                </StackPanel>
-            </Border>
+                </Border>
 
-            <!-- Regional Progress Bar (#483 floor rounding + Windows Narrator sync) -->
+                <Border
+                    Padding="20"
+                    CornerRadius="8"
+                    Background="{ThemeResource TotalDropCardBackgroundBrush}"
+                    BorderBrush="{ThemeResource TotalDropCardStrokeBrush}"
+                    BorderThickness="1"
+                    AutomationProperties.LandmarkType="Custom"
+                    AutomationProperties.LocalizedLandmarkType="{x:Bind ViewModel.OfferTitle, Mode=OneWay}"
+                    AutomationProperties.Name="{x:Bind ViewModel.OfferTitle, Mode=OneWay}">
+                    <StackPanel Spacing="12">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.OfferTitle, Mode=OneWay}"
+                            Style="{StaticResource SubtitleTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                        <TextBlock
+                            Text="{x:Bind ViewModel.OfferSummary, Mode=OneWay}"
+                            Style="{StaticResource BodyStrongTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True"
+                            AutomationProperties.LiveSetting="Polite" />
+
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.OfferFiles, Mode=OneWay}">
+                            <ItemsRepeater.Layout>
+                                <StackLayout Spacing="4" />
+                            </ItemsRepeater.Layout>
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="vm:OfferFileItemModel">
+                                    <TextBlock
+                                        Text="{x:Bind SafeDisplayName}"
+                                        TextWrapping="Wrap"
+                                        IsTextScaleFactorEnabled="True" />
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+
+                        <TextBlock
+                            Text="{x:Bind ViewModel.OfferMoreText, Mode=OneWay}"
+                            Visibility="{x:Bind ViewModel.OfferMoreVisibility, Mode=OneWay}"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+
+                        <TextBlock
+                            Text="{x:Bind ViewModel.Strings.ReceiveOfferTextNote, Mode=OneWay}"
+                            Visibility="{x:Bind ViewModel.OfferTextNoteVisibility, Mode=OneWay}"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+
+                        <Grid ColumnSpacing="8" Visibility="{x:Bind ViewModel.OfferDestinationVisibility, Mode=OneWay}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock
+                                Grid.Column="0"
+                                Text="{x:Bind ViewModel.DestinationFolder, Mode=OneWay}"
+                                FlowDirection="LeftToRight"
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                VerticalAlignment="Center"
+                                TextWrapping="Wrap"
+                                IsTextScaleFactorEnabled="True" />
+                            <Button
+                                x:Name="ChooseDestinationButton"
+                                Grid.Column="1"
+                                Click="OnChooseDestinationClick"
+                                AutomationProperties.Name="{x:Bind ViewModel.Strings.OpenFolder, Mode=OneWay}">
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.Strings.OpenFolder, Mode=OneWay}"
+                                    TextWrapping="Wrap"
+                                    IsTextScaleFactorEnabled="True" />
+                            </Button>
+                        </Grid>
+
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Button
+                                x:Name="AcceptOfferButton"
+                                Grid.Column="0"
+                                Style="{StaticResource AccentButtonStyle}"
+                                Click="OnAcceptClick"
+                                AutomationProperties.Name="{x:Bind ViewModel.Strings.ReceiveAccept, Mode=OneWay}">
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.Strings.ReceiveAccept, Mode=OneWay}"
+                                    TextWrapping="Wrap"
+                                    IsTextScaleFactorEnabled="True" />
+                            </Button>
+                            <Button
+                                x:Name="DeclineOfferButton"
+                                Grid.Column="1"
+                                Click="OnDeclineClick"
+                                AutomationProperties.Name="{x:Bind ViewModel.Strings.ReceiveDecline, Mode=OneWay}">
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.Strings.ReceiveDecline, Mode=OneWay}"
+                                    TextWrapping="Wrap"
+                                    IsTextScaleFactorEnabled="True" />
+                            </Button>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- Transferring Stage (#483 floor rounding + Windows Narrator sync) -->
             <StackPanel
-                Spacing="6"
+                Spacing="12"
                 Visibility="{x:Bind ViewModel.ProgressVisibility, Mode=OneWay}">
-                <Grid>
+                <Grid ColumnSpacing="8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock
                         Grid.Column="0"
-                        Text="Receiving"
-                        Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        Text="{x:Bind ViewModel.Strings.ReceiveReceiving, Mode=OneWay}"
+                        Style="{StaticResource BodyStrongTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True" />
                     <TextBlock
                         Grid.Column="1"
                         Text="{x:Bind ViewModel.RegionalPercentText, Mode=OneWay}"
                         Style="{StaticResource BodyStrongTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True"
                         AutomationProperties.LiveSetting="Polite" />
                 </Grid>
 
@@ -161,9 +360,273 @@
                     Minimum="0"
                     Maximum="100"
                     Value="{x:Bind ViewModel.WholePercent, Mode=OneWay}"
-                    AutomationProperties.Name="Receive transfer progress"
+                    AutomationProperties.Name="{x:Bind ViewModel.Strings.ReceiveReceiving, Mode=OneWay}"
                     AutomationProperties.HelpText="{x:Bind ViewModel.RegionalPercentText, Mode=OneWay}" />
+
+                <TextBlock
+                    Text="{x:Bind ViewModel.FormattedProgressBytes, Mode=OneWay}"
+                    Style="{StaticResource CaptionTextBlockStyle}"
+                    TextWrapping="Wrap"
+                    IsTextScaleFactorEnabled="True" />
+
+                <Button
+                    x:Name="StopReceiveButton"
+                    HorizontalAlignment="Left"
+                    Click="OnCancelReceiveClick"
+                    AutomationProperties.Name="{x:Bind ViewModel.Strings.Stop, Mode=OneWay}">
+                    <TextBlock
+                        Text="{x:Bind ViewModel.Strings.Stop, Mode=OneWay}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True" />
+                </Button>
             </StackPanel>
+
+            <!-- Done Stage: Files -->
+            <Border
+                Visibility="{x:Bind ViewModel.DoneFilesVisibility, Mode=OneWay}"
+                Padding="24"
+                CornerRadius="8"
+                Background="{ThemeResource TotalDropCardBackgroundBrush}"
+                BorderBrush="{ThemeResource TotalDropCardStrokeBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="12" HorizontalAlignment="Center">
+                    <Viewbox
+                        Width="48"
+                        Height="48"
+                        FlowDirection="LeftToRight"
+                        AutomationProperties.AccessibilityView="Raw">
+                        <Canvas Width="112" Height="112">
+                            <Path
+                                Data="M55 15H97V57A42 42 0 1 1 55 15Z"
+                                Fill="{ThemeResource TotalDropMarkBrush}" />
+                            <Path
+                                Data="M37 58 L50 71 L74 45"
+                                Stroke="{ThemeResource TotalDropMarkOnBrush}"
+                                StrokeThickness="9"
+                                StrokeStartLineCap="Round"
+                                StrokeEndLineCap="Round"
+                                StrokeLineJoin="Round"
+                                Fill="Transparent" />
+                        </Canvas>
+                    </Viewbox>
+
+                    <TextBlock
+                        Text="{x:Bind ViewModel.ResultTitle, Mode=OneWay}"
+                        Style="{StaticResource SubtitleTextBlockStyle}"
+                        HorizontalAlignment="Center"
+                        TextAlignment="Center"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True"
+                        AutomationProperties.LiveSetting="Assertive" />
+
+                    <TextBlock
+                        Text="{x:Bind ViewModel.ResultBody, Mode=OneWay}"
+                        Style="{StaticResource BodyTextBlockStyle}"
+                        HorizontalAlignment="Center"
+                        TextAlignment="Center"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True" />
+
+                    <Grid ColumnSpacing="8" HorizontalAlignment="Center">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button
+                            x:Name="OpenSavedFolderButton"
+                            Grid.Column="0"
+                            Visibility="{x:Bind ViewModel.OpenFolderVisibility, Mode=OneWay}"
+                            Click="OnOpenFolderClick"
+                            AutomationProperties.Name="{x:Bind ViewModel.Strings.OpenFolder, Mode=OneWay}">
+                            <TextBlock
+                                Text="{x:Bind ViewModel.Strings.OpenFolder, Mode=OneWay}"
+                                TextWrapping="Wrap"
+                                IsTextScaleFactorEnabled="True" />
+                        </Button>
+                        <Button
+                            x:Name="ReceiveDoneFilesButton"
+                            Grid.Column="1"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Click="OnDoneResetClick"
+                            AutomationProperties.Name="{x:Bind ViewModel.Strings.Done, Mode=OneWay}">
+                            <TextBlock
+                                Text="{x:Bind ViewModel.Strings.Done, Mode=OneWay}"
+                                TextWrapping="Wrap"
+                                IsTextScaleFactorEnabled="True" />
+                        </Button>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Done Stage: In-Memory Received Text (Escape Disabled!) -->
+            <Border
+                Visibility="{x:Bind ViewModel.DoneTextVisibility, Mode=OneWay}"
+                Padding="20"
+                CornerRadius="8"
+                Background="{ThemeResource TotalDropCardBackgroundBrush}"
+                BorderBrush="{ThemeResource TotalDropCardStrokeBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="12">
+                    <TextBlock
+                        Text="{x:Bind ViewModel.ResultTitle, Mode=OneWay}"
+                        Style="{StaticResource SubtitleTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True"
+                        AutomationProperties.LiveSetting="Assertive" />
+
+                    <TextBox
+                        x:Name="ReceivedTextBox"
+                        Text="{x:Bind ViewModel.DisplayReceivedText, Mode=OneWay}"
+                        IsReadOnly="True"
+                        AcceptsReturn="True"
+                        TextWrapping="Wrap"
+                        MinHeight="120"
+                        MaxHeight="300"
+                        AutomationProperties.Name="{x:Bind ViewModel.Strings.ReceiveTextDone, Mode=OneWay}" />
+
+                    <TextBlock
+                        Text="{x:Bind ViewModel.Strings.ReceiveTextShortened, Mode=OneWay}"
+                        Visibility="{x:Bind ViewModel.ReceivedTextShortenedVisibility, Mode=OneWay}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True" />
+
+                    <TextBlock
+                        Text="{x:Bind ViewModel.Strings.ReceiveTextHidden, Mode=OneWay}"
+                        Visibility="{x:Bind ViewModel.ReceivedTextHiddenVisibility, Mode=OneWay}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True" />
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button
+                            x:Name="CopyReceivedTextButton"
+                            Grid.Column="0"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Click="OnCopyReceivedTextClick"
+                            AutomationProperties.Name="{x:Bind ViewModel.Strings.CopyText, Mode=OneWay}">
+                            <TextBlock
+                                Text="{x:Bind ViewModel.Strings.CopyText, Mode=OneWay}"
+                                TextWrapping="Wrap"
+                                IsTextScaleFactorEnabled="True" />
+                        </Button>
+                        <Button
+                            x:Name="DoneReceivedTextButton"
+                            Grid.Column="1"
+                            Click="OnDoneResetClick"
+                            AutomationProperties.Name="{x:Bind ViewModel.Strings.Done, Mode=OneWay}">
+                            <TextBlock
+                                Text="{x:Bind ViewModel.Strings.Done, Mode=OneWay}"
+                                TextWrapping="Wrap"
+                                IsTextScaleFactorEnabled="True" />
+                        </Button>
+                        <TextBlock
+                            Grid.Column="2"
+                            VerticalAlignment="Center"
+                            Text="{x:Bind ViewModel.Strings.TextCopied, Mode=OneWay}"
+                            Visibility="{x:Bind ViewModel.TextCopiedFeedbackVisibility, Mode=OneWay}"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True"
+                            AutomationProperties.LiveSetting="Polite" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Declined Stage -->
+            <Border
+                Visibility="{x:Bind ViewModel.DeclinedVisibility, Mode=OneWay}"
+                Padding="20"
+                CornerRadius="8"
+                Background="{ThemeResource TotalDropCardBackgroundBrush}"
+                BorderBrush="{ThemeResource TotalDropCardStrokeBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="12">
+                    <TextBlock
+                        Text="{x:Bind ViewModel.ResultTitle, Mode=OneWay}"
+                        Style="{StaticResource BodyStrongTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True"
+                        AutomationProperties.LiveSetting="Polite" />
+                    <Button
+                        x:Name="DeclinedDoneButton"
+                        Click="OnDoneResetClick"
+                        AutomationProperties.Name="{x:Bind ViewModel.Strings.Done, Mode=OneWay}">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.Strings.Done, Mode=OneWay}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <!-- Failed Stage -->
+            <Border
+                Visibility="{x:Bind ViewModel.FailedVisibility, Mode=OneWay}"
+                Padding="20"
+                CornerRadius="8"
+                Background="{ThemeResource TotalDropCardBackgroundBrush}"
+                BorderBrush="{ThemeResource TotalDropCardStrokeBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="12">
+                    <TextBlock
+                        Text="{x:Bind ViewModel.ErrorSummary, Mode=OneWay}"
+                        Style="{StaticResource BodyStrongTextBlockStyle}"
+                        Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                        TextWrapping="Wrap"
+                        IsTextScaleFactorEnabled="True"
+                        AutomationProperties.LiveSetting="Assertive" />
+
+                    <Button
+                        x:Name="ReceiveToggleDetailsButton"
+                        Click="OnToggleErrorDetailsClick"
+                        AutomationProperties.Name="{x:Bind ViewModel.Strings.MoreInfo, Mode=OneWay}">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.Strings.MoreInfo, Mode=OneWay}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                    </Button>
+
+                    <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.ErrorDetailsVisibility, Mode=OneWay}">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.ErrorCauseDetail, Mode=OneWay}"
+                            Visibility="{x:Bind ViewModel.ErrorCauseDetailVisibility, Mode=OneWay}"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                        <TextBlock
+                            Text="{x:Bind ViewModel.Strings.TechnicalDetail, Mode=OneWay}"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                        <TextBlock
+                            Text="{x:Bind ViewModel.ErrorTechnicalEnglish, Mode=OneWay}"
+                            FlowDirection="LeftToRight"
+                            Language="en-US"
+                            FontFamily="Cascadia Mono, Consolas"
+                            IsTextSelectionEnabled="True"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                    </StackPanel>
+
+                    <Button
+                        x:Name="ReceiveFailedDoneButton"
+                        Style="{StaticResource AccentButtonStyle}"
+                        Click="OnDoneResetClick"
+                        AutomationProperties.Name="{x:Bind ViewModel.Strings.Done, Mode=OneWay}">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.Strings.Done, Mode=OneWay}"
+                            TextWrapping="Wrap"
+                            IsTextScaleFactorEnabled="True" />
+                    </Button>
+                </StackPanel>
+            </Border>
 
         </StackPanel>
     </ScrollViewer>

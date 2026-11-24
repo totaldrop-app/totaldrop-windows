@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The TotalDrop Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+using System.Buffers;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -16,10 +18,21 @@ namespace TotalDrop.WinUI.Interop;
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(VersionInfoDto))]
+[JsonSerializable(typeof(StatusOkDto))]
 [JsonSerializable(typeof(BridgeErrorEnvelopeDto))]
 [JsonSerializable(typeof(BridgeUiBundleDto))]
 [JsonSerializable(typeof(ValidatedCodeDto))]
 [JsonSerializable(typeof(RegionalPercentDto))]
+[JsonSerializable(typeof(FormattedBytesDto))]
+[JsonSerializable(typeof(FormattedMessageDto))]
+[JsonSerializable(typeof(SanitizedFilenameDto))]
+[JsonSerializable(typeof(SanitizedPeerTextDto))]
+[JsonSerializable(typeof(ValidatedPathDto))]
+[JsonSerializable(typeof(ValidatedPathDto[]))]
+[JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(BridgeNetworkConfigDto))]
+[JsonSerializable(typeof(AppSettingsFileDto))]
+[JsonSerializable(typeof(SessionEventDto))]
 [JsonSerializable(typeof(ActivationEnvelopeDto))]
 public sealed partial class TotalDropJsonContext : JsonSerializerContext;
 
@@ -30,6 +43,11 @@ public sealed record VersionInfoDto(
     string AppVersion,
     string CoreVersion,
     string MsixVersion);
+
+/// <summary>
+/// Pure boolean status returned by <c>totaldrop_win_validate_server_url_json</c>.
+/// </summary>
+public sealed record StatusOkDto(bool Ok);
 
 /// <summary>
 /// Structured FFI error details inside <see cref="BridgeErrorEnvelopeDto"/>.
@@ -49,7 +67,8 @@ public sealed record BridgeErrorEnvelopeDto(
     BridgeErrorDto? Error);
 
 /// <summary>
-/// DTO mirror of <c>totaldrop_windows_bridge::l10n::WindowsUiBundle</c>.
+/// DTO mirror of <c>totaldrop_windows_bridge::l10n::WindowsUiBundle</c>
+/// (29 Phase 1 fields preserved verbatim + 80 Phase 2 fields = 109 total).
 /// </summary>
 public sealed record BridgeUiBundleDto(
     string LanguageTag,
@@ -80,7 +99,87 @@ public sealed record BridgeUiBundleDto(
     string SettingsTitle,
     string Cancel,
     string KeepAwakeReason,
-    string VersionLabel);
+    string VersionLabel,
+    string DesktopGenericName,
+    string HomeSendTitle,
+    string HomeSendBody,
+    string HomeReceiveTitle,
+    string HomeReceiveBody,
+    string HomeFooter,
+    string SameNetworkNote,
+    string Done,
+    string TryAgain,
+    string Back,
+    string Stop,
+    string KeepGoing,
+    string MoreInfo,
+    string OpenFolder,
+    string CancelTransferTitle,
+    string CancelTransferBody,
+    string TechnicalDetail,
+    string SendEmpty,
+    string SendEmptyHint,
+    string SendCounting,
+    string SendRemove,
+    string SendPreparing,
+    string SendAddFailed,
+    string SendCodeHint,
+    string SendWaiting,
+    string SendWaitingAccept,
+    string SendCopied,
+    string SendSending,
+    string SendDone,
+    string PickTitle,
+    string SendText,
+    string SendTextHint,
+    string SendTextDone,
+    string SendTextShortened,
+    string SendTextHidden,
+    string SendClipboard,
+    string SendClipboardEmpty,
+    string SendClipboardKept,
+    string ReceiveCodeHelp,
+    string ReceiveCodeInvalid,
+    string ReceiveConnecting,
+    string ReceiveOffer,
+    string ReceiveOfferText,
+    string ReceiveOfferTextNote,
+    string ReceiveDeclined,
+    string ReceiveTextDeclined,
+    string ReceiveReceiving,
+    string ReceiveDone,
+    string ReceiveTextDone,
+    string ReceiveTextShortened,
+    string ReceiveTextHidden,
+    string CopyText,
+    string TextCopied,
+    string CodeSuggestions,
+    string SettingsServer,
+    string SettingsServerHelp,
+    string SettingsServerReset,
+    string SettingsServerInvalid,
+    string SettingsSave,
+    string SettingsAbout,
+    string SettingsAboutBody,
+    string SettingsPrivacy,
+    string SettingsPrivacyBody,
+    string PrivacyMode,
+    string PrivacyModeHint,
+    string PrivacyModeConfirmTitle,
+    string PrivacyModeConfirmBody,
+    string PrivacyModeTurnOn,
+    string DraftTranslation,
+    string SettingsWordsEnglish,
+    string ErrorInvalidCode,
+    string ErrorWrongCode,
+    string ErrorInvalidOffer,
+    string ErrorTextDamaged,
+    string ErrorBadServer,
+    string ErrorCodeExpired,
+    string ErrorCodeNotInUse,
+    string ErrorOther,
+    string ShareBusy,
+    string LinkBusy);
 
 /// <summary>
 /// DTO mirror of <c>totaldrop_windows_bridge::uri::ValidatedCode</c>.
@@ -102,6 +201,106 @@ public sealed record RegionalPercentDto(
     string Formatted);
 
 /// <summary>
+/// DTO returned by <c>totaldrop_win_format_bytes_json</c>.
+/// </summary>
+public sealed record FormattedBytesDto(
+    ulong Bytes,
+    string Formatted);
+
+/// <summary>
+/// DTO returned by <c>totaldrop_win_format_message_json</c>.
+/// </summary>
+public sealed record FormattedMessageDto(
+    string Key,
+    string LanguageTag,
+    string Formatted);
+
+/// <summary>
+/// DTO returned by <c>totaldrop_win_sanitize_filename_json</c>.
+/// </summary>
+public sealed record SanitizedFilenameDto(
+    string Sanitized,
+    bool HasHiddenControls);
+
+/// <summary>
+/// DTO mirror of <c>totaldrop_windows_bridge::l10n::SanitizedPeerText</c>.
+/// </summary>
+public sealed record SanitizedPeerTextDto(
+    string DisplayText,
+    bool Shortened,
+    bool HasHiddenControls);
+
+/// <summary>
+/// DTO mirror of <c>totaldrop_windows_bridge::activation::NormalizedWindowsPath</c>.
+/// </summary>
+public sealed record ValidatedPathDto(
+    string ExtendedPath,
+    string UnprefixedPath,
+    string SafeDisplayPath,
+    string RootKind,
+    ulong Utf16Len,
+    bool ExceedsLegacyMaxPath);
+
+/// <summary>
+/// DTO mirror of <c>totaldrop_windows_bridge::session::BridgeNetworkConfig</c>.
+/// </summary>
+public sealed record BridgeNetworkConfigDto(
+    string RendezvousServer,
+    string RelayServer,
+    string StunServer,
+    bool PrivacyRelayOnly,
+    bool StrongerThreeWordCode);
+
+/// <summary>
+/// On-disk local settings file schema distinguishing omitted (<see langword="null"/>)
+/// properties from explicit empty strings (<c>""</c>).
+/// </summary>
+public sealed record AppSettingsFileDto(
+    string? RendezvousServer,
+    string? RelayServer,
+    string? StunServer,
+    bool? PrivacyRelayOnly,
+    bool? StrongerThreeWordCode);
+
+/// <summary>
+/// Flat Native AOT DTO matching every NDJSON line emitted by
+/// <c>totaldrop_win_session_poll_events_ndjson</c> (tagged by <c>event</c>).
+/// </summary>
+public sealed record SessionEventDto(
+    string Event,
+    ValidatedCodeDto? Code = null,
+    string? ShareText = null,
+    ulong? Files = null,
+    ulong? Dirs = null,
+    ulong? TotalBytes = null,
+    ulong? DoneBytes = null,
+    string? FormattedDone = null,
+    string? FormattedTotal = null,
+    string? FormattedBytes = null,
+    ulong? Skipped = null,
+    bool? IsText = null,
+    string? Caption = null,
+    string[]? VerificationWords = null,
+    string? JoinedWordsLtr = null,
+    string[]? TopLevel = null,
+    string[]? TopLevelSanitized = null,
+    ulong? MoreCount = null,
+    RegionalPercentDto? Percent = null,
+    ulong? FilesOk = null,
+    ulong? FilesFailed = null,
+    ulong? Bytes = null,
+    string? SavedTo = null,
+    string[]? Placed = null,
+    string? ReceivedText = null,
+    SanitizedPeerTextDto? SanitizedText = null,
+    string? Summary = null,
+    string? Kind = null,
+    string? L10nKey = null,
+    string? Cause = null,
+    string? CauseDetail = null,
+    string? TechnicalEnglish = null);
+
+/// <summary>
 /// DTO mirror of <c>totaldrop_windows_bridge::activation::ActivationEnvelope</c>.
 /// </summary>
 public sealed record ActivationEnvelopeDto(
@@ -120,14 +319,58 @@ public sealed record ActivationPayloadDto(
     string? Screen);
 
 /// <summary>
+/// Reflection-free placeholder argument for <see cref="NativeBridge.TryFormatMessage"/>.
+/// </summary>
+public readonly record struct MessageArg
+{
+    public string Name { get; }
+    public bool IsCount { get; }
+    public ulong CountValue { get; }
+    public string? TextValue { get; }
+
+    private MessageArg(string name, ulong countValue)
+    {
+        Name = name;
+        IsCount = true;
+        CountValue = countValue;
+        TextValue = null;
+    }
+
+    private MessageArg(string name, string textValue)
+    {
+        Name = name;
+        IsCount = false;
+        CountValue = 0;
+        TextValue = textValue;
+    }
+
+    public static MessageArg FromCount(string name, ulong value) => new(name, value);
+
+    public static MessageArg FromText(string name, string value) => new(name, value);
+}
+
+/// <summary>
 /// Source-generated <see cref="LibraryImportAttribute"/> C ABI boundary into
-/// <c>totaldrop_windows_ffi.dll</c> and Win32 power-management APIs.
-/// All cryptography, protocol framing, URI validation, and regional formatting
-/// run in Rust; C# only drives WinUI 3 controls (ADR 0016).
+/// <c>totaldrop_windows_ffi.dll</c> and Win32 power/shell APIs.
+/// All cryptography, protocol framing, URI/path/URL validation, and 35-language
+/// regional formatting run in Rust; C# only drives WinUI 3 controls (ADR 0016).
 /// </summary>
 public static partial class NativeBridge
 {
     private const string BridgeDll = "totaldrop_windows_ffi";
+
+    public const int FfiOk = 0;
+    public const int FfiErrNullPointer = -1;
+    public const int FfiErrInvalidUtf8 = -2;
+    public const int FfiErrInvalidHandle = -3;
+    public const int FfiErrInvalidState = -4;
+    public const int FfiErrInvalidArg = -5;
+    public const int FfiErrInternal = -99;
+
+    public const ulong MaxTextBytes = 1_048_576;
+    public const int MaxShownTextChars = 16_384;
+
+    private static readonly Guid FolderIdDownloads = new("374DE290-123F-4565-9164-39C4925E467B");
 
     [Flags]
     public enum ExecutionState : uint
@@ -135,6 +378,9 @@ public static partial class NativeBridge
         SystemRequired = 0x0000_0001,
         Continuous = 0x8000_0000,
     }
+
+    // -----------------------------------------------------------------------
+    // Win32 System P/Invokes
 
     /// <summary>
     /// Prevents Windows from entering sleep while an active transfer is running
@@ -151,44 +397,143 @@ public static partial class NativeBridge
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool ProcessIdToSessionId(uint dwProcessId, out uint pSessionId);
 
+    [LibraryImport("shell32.dll")]
+    private static partial int SHGetKnownFolderPath(
+        in Guid rfid,
+        uint dwFlags,
+        nint hToken,
+        out nint ppszPath);
+
+    [LibraryImport("ole32.dll")]
+    private static partial void CoTaskMemFree(nint pv);
+
     /// <summary>
-    /// Returns app, core, and MSIX version metadata as JSON.
+    /// Resolves the canonical default receive folder (<c>Downloads\TotalDrop</c>),
+    /// using <c>SHGetKnownFolderPath(FOLDERID_Downloads)</c> on Windows and
+    /// falling back safely to <c>UserProfile/Downloads/TotalDrop</c>.
     /// </summary>
+    public static string ResolveDefaultDownloadsFolder()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                int hr = SHGetKnownFolderPath(in FolderIdDownloads, 0, 0, out nint pathPtr);
+                if (hr == 0 && pathPtr != 0)
+                {
+                    try
+                    {
+                        string? downloads = Marshal.PtrToStringUni(pathPtr);
+                        if (!string.IsNullOrWhiteSpace(downloads))
+                        {
+                            return Path.Combine(downloads, "TotalDrop");
+                        }
+                    }
+                    finally
+                    {
+                        CoTaskMemFree(pathPtr);
+                    }
+                }
+            }
+            catch (DllNotFoundException)
+            {
+                // Fall back to UserProfile\Downloads below.
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // Fall back to UserProfile\Downloads below.
+            }
+        }
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "Downloads",
+            "TotalDrop");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1 C ABI Exports (6 symbols)
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_string_free")]
+    public static partial void FreeBridgeString(nint ptr);
+
     [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_version_json")]
     public static partial nint GetVersionJson();
 
-    /// <summary>
-    /// Validates a <c>totaldrop://r/…</c> or <c>https://totaldrop.app/r#…</c>
-    /// activation URI via <c>totaldrop_proto::TransferCode::from_link</c>.
-    /// </summary>
     [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_validate_uri_json", StringMarshalling = StringMarshalling.Utf8)]
     public static partial nint ValidateUriJson(string rawUri);
 
-    /// <summary>
-    /// Validates interactive Receive-box code input via
-    /// <c>totaldrop_proto::TransferCode::parse</c>.
-    /// </summary>
     [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_validate_input_json", StringMarshalling = StringMarshalling.Utf8)]
     public static partial nint ValidateUserInputJson(string rawInput);
 
-    /// <summary>
-    /// Formats floor-rounded regional transfer progress (#483) in Rust.
-    /// </summary>
     [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_format_percent_json", StringMarshalling = StringMarshalling.Utf8)]
     public static partial nint FormatRegionalPercentJson(ulong doneBytes, ulong totalBytes, string regionTag);
 
-    /// <summary>
-    /// Resolves the 35-language UI bundle for the user's preferred Windows
-    /// display languages and regional format.
-    /// </summary>
     [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_ui_bundle_json", StringMarshalling = StringMarshalling.Utf8)]
     public static partial nint ResolveUiBundleJson(string commaSeparatedBcp47Tags, string regionTag, string appVersion);
 
-    /// <summary>
-    /// Frees a UTF-8 buffer allocated by <c>totaldrop_windows_ffi.dll</c>.
-    /// </summary>
-    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_string_free")]
-    public static partial void FreeBridgeString(nint ptr);
+    // -----------------------------------------------------------------------
+    // Phase 2 Group A C ABI Exports (8 symbols)
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_extract_clipboard_code_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint ExtractClipboardCodeJson(string rawText);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_code_completions_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint CodeCompletionsJson(string prefix, uint limit);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_format_bytes_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint FormatBytesJson(ulong bytes, string langTags, string regionTag);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_format_message_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint FormatMessageJson(string key, string argsJson, string langTags, string regionTag);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_sanitize_filename_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint SanitizeFilenameJson(string raw);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_sanitize_text_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint SanitizeTextJson(string raw);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_validate_server_url_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint ValidateServerUrlJson(string url);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_validate_paths_json", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint ValidatePathsJson(string pathsJson);
+
+    // -----------------------------------------------------------------------
+    // Phase 2 Group B C ABI Exports (10 symbols)
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_send_files_start", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial ulong SendFilesStart(string cfgJson, string pathsJson, string langTags, string regionTag);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_send_text_start", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial ulong SendTextStart(string cfgJson, string text, string langTags, string regionTag);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_receive_connect_start", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial ulong ReceiveConnectStart(string cfgJson, string codeOrUri, string langTags, string regionTag);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_receive_accept_files", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int ReceiveAcceptFiles(ulong sessionId, string destDir);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_receive_accept_text")]
+    public static partial int ReceiveAcceptText(ulong sessionId);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_receive_decline")]
+    public static partial int ReceiveDecline(ulong sessionId);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_session_poll_events_ndjson")]
+    public static partial nint SessionPollEventsNdjson(ulong sessionId);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_session_cancel")]
+    public static partial int SessionCancel(ulong sessionId);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_session_destroy")]
+    public static partial int SessionDestroy(ulong sessionId);
+
+    [LibraryImport(BridgeDll, EntryPoint = "totaldrop_win_shutdown")]
+    public static partial int Shutdown(uint timeoutMs);
+
+    // -----------------------------------------------------------------------
+    // Managed Wrappers (Zero Reflection, NUL-Guarded)
 
     private static string? TakeJsonString(nint ptr)
     {
@@ -206,6 +551,12 @@ public static partial class NativeBridge
             FreeBridgeString(ptr);
         }
     }
+
+    private static bool ContainsNul(string? value) =>
+        value is not null && value.Contains('\0');
+
+    private static string StripNul(string? value) =>
+        string.IsNullOrEmpty(value) ? string.Empty : value.Replace("\0", string.Empty, StringComparison.Ordinal);
 
     private static bool TryExtractError(string json, out BridgeErrorDto? error)
     {
@@ -229,9 +580,35 @@ public static partial class NativeBridge
         return false;
     }
 
-    /// <summary>
-    /// Reads and validates version metadata from <c>totaldrop_windows_ffi.dll</c>.
-    /// </summary>
+    private static string SerializeMessageArgs(ReadOnlySpan<MessageArg> args)
+    {
+        if (args.IsEmpty)
+        {
+            return "{}";
+        }
+
+        ArrayBufferWriter<byte> buffer = new();
+        using (Utf8JsonWriter writer = new(buffer))
+        {
+            writer.WriteStartObject();
+            foreach (MessageArg arg in args)
+            {
+                if (arg.IsCount)
+                {
+                    writer.WriteNumber(arg.Name, arg.CountValue);
+                }
+                else
+                {
+                    writer.WriteString(arg.Name, arg.TextValue ?? string.Empty);
+                }
+            }
+
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
     public static VersionInfoDto? TryGetVersionInfo()
     {
         string? json = TakeJsonString(GetVersionJson());
@@ -255,10 +632,6 @@ public static partial class NativeBridge
         }
     }
 
-    /// <summary>
-    /// Validates a protocol or web activation URI, explicitly separating
-    /// structured Rust error envelopes from valid <see cref="ValidatedCodeDto"/> payloads.
-    /// </summary>
     public static bool TryValidateUri(
         string rawUri,
         out ValidatedCodeDto? code,
@@ -267,7 +640,7 @@ public static partial class NativeBridge
         code = null;
         error = null;
 
-        if (rawUri is not null && rawUri.Contains('\0'))
+        if (ContainsNul(rawUri))
         {
             error = new BridgeErrorDto(
                 Kind: "invalid_activation_link",
@@ -277,13 +650,8 @@ public static partial class NativeBridge
             return false;
         }
 
-        string? json = TakeJsonString(ValidateUriJson(rawUri!));
-        if (string.IsNullOrEmpty(json))
-        {
-            return false;
-        }
-
-        if (TryExtractError(json, out error))
+        string? json = TakeJsonString(ValidateUriJson(rawUri ?? string.Empty));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
         {
             return false;
         }
@@ -307,10 +675,6 @@ public static partial class NativeBridge
         return false;
     }
 
-    /// <summary>
-    /// Validates interactive Receive-box code input, explicitly rejecting
-    /// structured Rust error envelopes.
-    /// </summary>
     public static bool TryValidateUserInput(
         string rawInput,
         out ValidatedCodeDto? code,
@@ -319,7 +683,7 @@ public static partial class NativeBridge
         code = null;
         error = null;
 
-        if (rawInput is not null && rawInput.Contains('\0'))
+        if (ContainsNul(rawInput))
         {
             error = new BridgeErrorDto(
                 Kind: "invalid_activation_link",
@@ -329,13 +693,8 @@ public static partial class NativeBridge
             return false;
         }
 
-        string? json = TakeJsonString(ValidateUserInputJson(rawInput!));
-        if (string.IsNullOrEmpty(json))
-        {
-            return false;
-        }
-
-        if (TryExtractError(json, out error))
+        string? json = TakeJsonString(ValidateUserInputJson(rawInput ?? string.Empty));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
         {
             return false;
         }
@@ -359,15 +718,81 @@ public static partial class NativeBridge
         return false;
     }
 
-    /// <summary>
-    /// Resolves the localized 35-language UI bundle, rejecting error envelopes.
-    /// </summary>
+    public static bool TryExtractClipboardCode(
+        string rawText,
+        out ValidatedCodeDto? code,
+        out BridgeErrorDto? error)
+    {
+        code = null;
+        error = null;
+
+        if (ContainsNul(rawText))
+        {
+            error = new BridgeErrorDto(
+                Kind: "no_code_found_in_text",
+                L10nKey: "errorInvalidCode",
+                Cause: null,
+                Message: "no TotalDrop transfer code found in text");
+            return false;
+        }
+
+        string? json = TakeJsonString(ExtractClipboardCodeJson(rawText ?? string.Empty));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
+        {
+            return false;
+        }
+
+        try
+        {
+            ValidatedCodeDto? validated = JsonSerializer.Deserialize(
+                json,
+                TotalDropJsonContext.Default.ValidatedCodeDto);
+            if (validated is { Nameplate: > 0, DisplayEnglish.Length: > 0, Canonical.Length: > 0 })
+            {
+                code = validated;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    public static string[] TryGetCodeCompletions(string prefix, uint limit = 4)
+    {
+        if (string.IsNullOrEmpty(prefix) || limit == 0 || ContainsNul(prefix))
+        {
+            return [];
+        }
+
+        string? json = TakeJsonString(CodeCompletionsJson(prefix, limit));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out _))
+        {
+            return [];
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize(json, TotalDropJsonContext.Default.StringArray) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
     public static BridgeUiBundleDto? TryResolveUiBundle(
         string commaSeparatedBcp47Tags,
         string regionTag,
         string appVersion)
     {
-        string? json = TakeJsonString(ResolveUiBundleJson(commaSeparatedBcp47Tags, regionTag, appVersion));
+        string? json = TakeJsonString(ResolveUiBundleJson(
+            StripNul(commaSeparatedBcp47Tags),
+            StripNul(regionTag),
+            StripNul(appVersion)));
         if (string.IsNullOrEmpty(json) || TryExtractError(json, out _))
         {
             return null;
@@ -388,15 +813,12 @@ public static partial class NativeBridge
         }
     }
 
-    /// <summary>
-    /// Formats floor-rounded regional progress percentage (#483), rejecting error envelopes.
-    /// </summary>
     public static RegionalPercentDto? TryFormatRegionalPercent(
         ulong doneBytes,
         ulong totalBytes,
         string regionTag)
     {
-        string? json = TakeJsonString(FormatRegionalPercentJson(doneBytes, totalBytes, regionTag));
+        string? json = TakeJsonString(FormatRegionalPercentJson(doneBytes, totalBytes, StripNul(regionTag)));
         if (string.IsNullOrEmpty(json) || TryExtractError(json, out _))
         {
             return null;
@@ -413,6 +835,328 @@ public static partial class NativeBridge
         {
             return null;
         }
+    }
+
+    public static FormattedBytesDto? TryFormatBytes(
+        ulong bytes,
+        string langTags,
+        string regionTag)
+    {
+        string? json = TakeJsonString(FormatBytesJson(bytes, StripNul(langTags), StripNul(regionTag)));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out _))
+        {
+            return null;
+        }
+
+        try
+        {
+            FormattedBytesDto? dto = JsonSerializer.Deserialize(
+                json,
+                TotalDropJsonContext.Default.FormattedBytesDto);
+            return dto is { Formatted.Length: > 0 } ? dto : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    public static bool TryFormatMessage(
+        string key,
+        ReadOnlySpan<MessageArg> args,
+        string langTags,
+        string regionTag,
+        out string formatted,
+        out BridgeErrorDto? error)
+    {
+        formatted = string.Empty;
+        error = null;
+
+        if (string.IsNullOrEmpty(key) || ContainsNul(key))
+        {
+            error = new BridgeErrorDto("empty_key", "errorOther", null, "localization message key must not be empty");
+            return false;
+        }
+
+        foreach (MessageArg arg in args)
+        {
+            if (ContainsNul(arg.Name) || (arg.TextValue is not null && ContainsNul(arg.TextValue)))
+            {
+                error = new BridgeErrorDto("invalid_arg", "errorOther", null, "message arguments must not contain NUL bytes");
+                return false;
+            }
+        }
+
+        string argsJson = SerializeMessageArgs(args);
+
+        string? json = TakeJsonString(FormatMessageJson(key, argsJson, StripNul(langTags), StripNul(regionTag)));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
+        {
+            return false;
+        }
+
+        try
+        {
+            FormattedMessageDto? dto = JsonSerializer.Deserialize(
+                json,
+                TotalDropJsonContext.Default.FormattedMessageDto);
+            if (dto is not null)
+            {
+                formatted = dto.Formatted;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    public static SanitizedFilenameDto? TrySanitizeFilename(string raw)
+    {
+        if (ContainsNul(raw))
+        {
+            return null;
+        }
+
+        string? json = TakeJsonString(SanitizeFilenameJson(raw ?? string.Empty));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out _))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize(json, TotalDropJsonContext.Default.SanitizedFilenameDto);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    public static SanitizedPeerTextDto? TrySanitizeText(string raw)
+    {
+        if (ContainsNul(raw))
+        {
+            return null;
+        }
+
+        string? json = TakeJsonString(SanitizeTextJson(raw ?? string.Empty));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out _))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize(json, TotalDropJsonContext.Default.SanitizedPeerTextDto);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    public static bool TryValidateServerUrl(string url, out BridgeErrorDto? error)
+    {
+        error = null;
+        if (ContainsNul(url))
+        {
+            error = new BridgeErrorDto("bad_server", "errorBadServer", null, "server URL must not contain NUL");
+            return false;
+        }
+
+        string? json = TakeJsonString(ValidateServerUrlJson(url ?? string.Empty));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
+        {
+            return false;
+        }
+
+        try
+        {
+            StatusOkDto? status = JsonSerializer.Deserialize(json, TotalDropJsonContext.Default.StatusOkDto);
+            return status is { Ok: true };
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    public static bool TryValidatePaths(
+        IEnumerable<string> rawPaths,
+        out ValidatedPathDto[] normalized,
+        out BridgeErrorDto? error)
+    {
+        normalized = [];
+        error = null;
+
+        string[] pathArray = rawPaths is string[] arr ? arr : [.. rawPaths];
+        foreach (string item in pathArray)
+        {
+            if (ContainsNul(item))
+            {
+                error = new BridgeErrorDto(
+                    "control_character",
+                    "errorStorage",
+                    null,
+                    "Windows path contains a NUL control character");
+                return false;
+            }
+        }
+
+        string pathsJson = JsonSerializer.Serialize(pathArray, TotalDropJsonContext.Default.StringArray);
+        string? json = TakeJsonString(ValidatePathsJson(pathsJson));
+        if (string.IsNullOrEmpty(json) || TryExtractError(json, out error))
+        {
+            return false;
+        }
+
+        try
+        {
+            ValidatedPathDto[]? parsed = JsonSerializer.Deserialize(
+                json,
+                TotalDropJsonContext.Default.ValidatedPathDtoArray);
+            if (parsed is not null)
+            {
+                normalized = parsed;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    public static ulong StartSendFiles(
+        BridgeNetworkConfigDto config,
+        string[] paths,
+        string langTags,
+        string regionTag)
+    {
+        foreach (string path in paths)
+        {
+            if (ContainsNul(path))
+            {
+                return 0;
+            }
+        }
+
+        string cfgJson = JsonSerializer.Serialize(config, TotalDropJsonContext.Default.BridgeNetworkConfigDto);
+        string pathsJson = JsonSerializer.Serialize(paths, TotalDropJsonContext.Default.StringArray);
+        if (ContainsNul(cfgJson) || ContainsNul(pathsJson))
+        {
+            return 0;
+        }
+
+        return SendFilesStart(cfgJson, pathsJson, StripNul(langTags), StripNul(regionTag));
+    }
+
+    public static ulong StartSendText(
+        BridgeNetworkConfigDto config,
+        string text,
+        string langTags,
+        string regionTag)
+    {
+        if (ContainsNul(text))
+        {
+            return 0;
+        }
+
+        string cfgJson = JsonSerializer.Serialize(config, TotalDropJsonContext.Default.BridgeNetworkConfigDto);
+        if (ContainsNul(cfgJson))
+        {
+            return 0;
+        }
+
+        return SendTextStart(cfgJson, text ?? string.Empty, StripNul(langTags), StripNul(regionTag));
+    }
+
+    public static ulong StartReceiveConnect(
+        BridgeNetworkConfigDto config,
+        string codeOrUri,
+        string langTags,
+        string regionTag)
+    {
+        if (ContainsNul(codeOrUri))
+        {
+            return 0;
+        }
+
+        string cfgJson = JsonSerializer.Serialize(config, TotalDropJsonContext.Default.BridgeNetworkConfigDto);
+        if (ContainsNul(cfgJson))
+        {
+            return 0;
+        }
+
+        return ReceiveConnectStart(cfgJson, codeOrUri ?? string.Empty, StripNul(langTags), StripNul(regionTag));
+    }
+
+    public static int TryAcceptReceiveFiles(ulong sessionId, string destDir)
+    {
+        if (string.IsNullOrWhiteSpace(destDir) || ContainsNul(destDir))
+        {
+            return FfiErrInvalidArg;
+        }
+
+        return ReceiveAcceptFiles(sessionId, destDir);
+    }
+
+    public static bool TryPollSessionEvents(
+        ulong sessionId,
+        out List<SessionEventDto> events,
+        out BridgeErrorDto? error)
+    {
+        events = [];
+        error = null;
+
+        string? ndjson = TakeJsonString(SessionPollEventsNdjson(sessionId));
+        if (ndjson is null)
+        {
+            return false;
+        }
+
+        if (ndjson.Length == 0)
+        {
+            return true;
+        }
+
+        if (TryExtractError(ndjson, out error))
+        {
+            return false;
+        }
+
+        foreach (ReadOnlySpan<char> rawLine in ndjson.AsSpan().EnumerateLines())
+        {
+            ReadOnlySpan<char> line = rawLine.Trim();
+            if (line.IsEmpty)
+            {
+                continue;
+            }
+
+            try
+            {
+                SessionEventDto? ev = JsonSerializer.Deserialize(
+                    line,
+                    TotalDropJsonContext.Default.SessionEventDto);
+                if (ev is not null)
+                {
+                    events.Add(ev);
+                }
+            }
+            catch (JsonException)
+            {
+                // Skip malformed line defensively without crashing the UI loop.
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

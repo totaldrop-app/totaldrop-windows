@@ -267,3 +267,24 @@ impl ValidatedCode {
         self.word_count >= 3
     }
 }
+
+/// Returns up to `limit` BIP-39 English transfer code words starting with
+/// `prefix` (case-insensitive ASCII letters only), matching Linux desktop
+/// autocomplete behavior.
+///
+/// Empty, non-ASCII-letter, or zero-limit inputs return an empty vector.
+#[must_use]
+pub fn code_word_completions(prefix: &str, limit: usize) -> Vec<&'static str> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let normalized = prefix.trim().to_lowercase();
+    if normalized.is_empty() || normalized.chars().any(|c| !c.is_ascii_lowercase()) {
+        return Vec::new();
+    }
+    (0..2048u16)
+        .filter_map(totaldrop_proto::english_word)
+        .filter(|word| word.starts_with(&normalized))
+        .take(limit)
+        .collect()
+}

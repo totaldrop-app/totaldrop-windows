@@ -670,7 +670,26 @@ impl WinUiWindowRouter {
     /// Resets [`Self::activity`] to [`WindowsActivityState::Idle`], stops the
     /// `Kose` mark animation, and queues a localized
     /// [`WinUiBridgeMessage::TransferFailed`] snapshot.
+    ///
+    /// Infers the transfer role (`is_sender`) from the active state prior to
+    /// resetting to idle.
     pub fn on_core_error(&mut self, err: &CoreError) -> WinUiBridgeMessage {
+        let is_sender = matches!(
+            self.activity,
+            WindowsActivityState::PreparingSend | WindowsActivityState::WaitingForPeer { .. }
+        );
+        self.on_core_error_for_role(err, is_sender)
+    }
+
+    /// Resets [`Self::activity`] to [`WindowsActivityState::Idle`], stops the
+    /// `Kose` mark animation, and queues a localized
+    /// [`WinUiBridgeMessage::TransferFailed`] snapshot using an explicit
+    /// `is_sender` role for `errorCodeExpired` vs `errorCodeNotInUse`.
+    pub fn on_core_error_for_role(
+        &mut self,
+        err: &CoreError,
+        is_sender: bool,
+    ) -> WinUiBridgeMessage {
         let was_transferring = self.activity.is_transferring();
         self.activity = WindowsActivityState::Idle;
         if was_transferring {
@@ -679,7 +698,7 @@ impl WinUiWindowRouter {
                 self.windows_animations_enabled,
             ));
         }
-        let localized = LocalizedTransferError::from_core_error(err, &self.localizer);
+        let localized = LocalizedTransferError::from_core_error(err, &self.localizer, is_sender);
         let msg = WinUiBridgeMessage::TransferFailed(localized);
         self.outbox.push(msg.clone());
         msg

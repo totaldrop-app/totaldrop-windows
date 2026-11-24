@@ -68,22 +68,71 @@ impl Default for BridgeNetworkConfig {
 }
 
 impl BridgeNetworkConfig {
-    /// Checks that user-configured rendezvous and relay URLs start with
-    /// `wss://` (or `ws://127.0.0.1` / `ws://[::1]` for local loopback testing).
+    /// Checks that user-configured rendezvous and relay URLs are accepted by
+    /// [`totaldrop_core::relay::check_url`] (`wss://` with a non-empty host, or
+    /// `ws://` strictly on localhost / `127.0.0.1` / `[::1]`, rejecting control
+    /// characters and `@` userinfo) and carry a strictly well-formed authority
+    /// (non-empty host or valid bracketed IPv6 literal, optional port in
+    /// `1..=65535`, and no `#` fragment per RFC 6455 §3).
     #[must_use]
     pub fn is_valid_rendezvous_url(url: &str) -> bool {
+        if url.chars().any(char::is_control) {
+            return false;
+        }
         let trimmed = url.trim();
-        trimmed.starts_with("wss://")
-            || trimmed.starts_with("ws://127.0.0.1:")
-            || trimmed.starts_with("ws://[::1]:")
-            || trimmed.starts_with("ws://localhost:")
+        if trimmed.is_empty() || totaldrop_core::relay::check_url(trimmed).is_err() {
+            return false;
+        }
+        if trimmed.contains('#') {
+            return false;
+        }
+
+        let Some(rest) = strip_ws_scheme(trimmed) else {
+            return false;
+        };
+        let authority = rest.split(['/', '?']).next().unwrap_or("");
+        if authority.is_empty()
+            || authority.contains('@')
+            || authority.chars().any(char::is_whitespace)
+        {
+            return false;
+        }
+
+        if authority.starts_with('[') {
+            let Some(end_bracket) = authority.find(']') else {
+                return false;
+            };
+            let Some(ipv6_str) = authority.get(1..end_bracket) else {
+                return false;
+            };
+            if ipv6_str.parse::<std::net::Ipv6Addr>().is_err() {
+                return false;
+            }
+            let after_bracket = authority.get(end_bracket.saturating_add(1)..).unwrap_or("");
+            if after_bracket.is_empty() {
+                true
+            } else if let Some(port_str) = after_bracket.strip_prefix(':') {
+                is_valid_port(port_str)
+            } else {
+                false
+            }
+        } else {
+            let (host, port_opt) = match authority.split_once(':') {
+                Some((h, p)) => (h, Some(p)),
+                None => (authority, None),
+            };
+            if host.is_empty() || host.contains('[') || host.contains(']') || host.contains(':') {
+                return false;
+            }
+            port_opt.is_none_or(is_valid_port)
+        }
     }
 
     /// Converts this configuration into [`totaldrop_core::SendOptions`].
     #[must_use]
     pub fn to_send_options(&self) -> SendOptions {
         SendOptions {
-            server: self.rendezvous_server.clone(),
+            server: self.rendezvous_server.trim().to_owned(),
             words: if self.stronger_three_word_code { 3 } else { 2 },
             paths: self.to_path_options(),
         }
@@ -93,7 +142,7 @@ impl BridgeNetworkConfig {
     #[must_use]
     pub fn to_receive_options(&self) -> ReceiveOptions {
         ReceiveOptions {
-            server: self.rendezvous_server.clone(),
+            server: self.rendezvous_server.trim().to_owned(),
             paths: self.to_path_options(),
         }
     }
@@ -102,12 +151,34 @@ impl BridgeNetworkConfig {
     #[must_use]
     pub fn to_path_options(&self) -> PathOptions {
         PathOptions {
-            relay: self.relay_server.clone(),
-            stun: self.stun_server.clone(),
+            relay: self.relay_server.trim().to_owned(),
+            stun: self.stun_server.trim().to_owned(),
             relay_only: self.privacy_relay_only,
             gateway: totaldrop_core::portmap::Gateway::Auto,
         }
     }
+}
+
+fn strip_ws_scheme(url: &str) -> Option<&str> {
+    if url
+        .get(..6)
+        .is_some_and(|s| s.eq_ignore_ascii_case("wss://"))
+    {
+        url.get(6..)
+    } else if url
+        .get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("ws://"))
+    {
+        url.get(5..)
+    } else {
+        None
+    }
+}
+
+fn is_valid_port(port_str: &str) -> bool {
+    !port_str.is_empty()
+        && port_str.bytes().all(|b| b.is_ascii_digit())
+        && port_str.parse::<u16>().is_ok_and(|port| port >= 1)
 }
 
 /// Read-only view-model projection of a [`totaldrop_core::Event`] formatted for
@@ -174,44 +245,122 @@ impl TransferViewEvent {
 /// technical detail in English for bug reports (`technicalDetail`, ADR 0019).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalizedTransferError {
+    /// Stable snake_case error category (`"wrong_code"`, `"bad_server"`, ...).
+    #[serde(default)]
+    pub kind: String,
+    /// Canonical `l10n/app` ARB key (`"errorWrongCode"`, `"errorBadServer"`, ...).
+    #[serde(default)]
+    pub l10n_key: String,
+    /// Canonical `cause*` key (`"causeTimedOut"`, ...) or `""` when unknown.
+    #[serde(default)]
+    pub cause: String,
     /// Primary localized message shown to the user.
     pub summary: String,
     /// Optional localized plain-language explanation (`causeTimedOut`, …).
     pub cause_detail: Option<String>,
-    /// Unmodified English technical string for problem reports.
+    /// Sanitized English technical string for problem reports (hidden
+    /// control/bidi characters revealed as `<U+XXXX>`).
     pub technical_english: String,
 }
+
+const MAX_ERROR_WORD_PREVIEW_CHARS: usize = 64;
 
 impl LocalizedTransferError {
     /// Maps a [`totaldrop_core::Error`] and its [`Cause`] into localized user
     /// text while preserving `err.to_string()` in English.
+    ///
+    /// `is_sender` distinguishes expired sender codes (`errorCodeExpired`) from
+    /// receiver lookups of codes not in use (`errorCodeNotInUse`), matching
+    /// Linux and Android parity.
     #[must_use]
-    pub fn from_core_error(err: &CoreError, localizer: &WindowsLocalizer) -> Self {
-        let primary_key = match err {
-            CoreError::WrongCode => "errorWrongCode",
-            CoreError::PeerLeft => "errorPeerLeft",
-            CoreError::Rendezvous(_) => "errorServer",
-            CoreError::Connect(_) => "errorConnect",
-            CoreError::Protocol(_) => "errorOther",
-            CoreError::InvalidOffer(_) => "errorInvalidOffer",
-            CoreError::Rejected(_) => "errorDeclined",
-            CoreError::Cancelled(_) => "errorCancelled",
-            CoreError::Stopped => "errorStopped",
-            CoreError::Io(_) => "errorStorage",
-            CoreError::Code(_) => "errorInvalidCode",
-            CoreError::Random => "errorOther",
-        };
-        let cause = err.cause();
-        let cause_detail = if cause == Cause::Unknown {
-            None
+    pub fn from_core_error(err: &CoreError, localizer: &WindowsLocalizer, is_sender: bool) -> Self {
+        let (kind, primary_key) = if err.is_bad_server_address() {
+            ("bad_server", "errorBadServer")
+        } else if err.is_code_not_in_use() {
+            if is_sender {
+                ("code_expired", "errorCodeExpired")
+            } else {
+                ("code_not_in_use", "errorCodeNotInUse")
+            }
         } else {
-            let cause_key = format!("cause{}", cause.as_str());
-            Some(localizer.text(&cause_key))
+            match err {
+                CoreError::WrongCode => ("wrong_code", "errorWrongCode"),
+                CoreError::PeerLeft => ("peer_left", "errorPeerLeft"),
+                CoreError::Rendezvous(_) => ("server", "errorServer"),
+                CoreError::Connect(_) => ("connect", "errorConnect"),
+                CoreError::Protocol(_) => ("protocol", "errorOther"),
+                CoreError::InvalidOffer(_) => ("invalid_offer", "errorInvalidOffer"),
+                CoreError::Rejected(_) => ("declined", "errorDeclined"),
+                CoreError::Cancelled(_) => ("cancelled", "errorCancelled"),
+                CoreError::Stopped => ("stopped", "errorStopped"),
+                CoreError::Io(_) => ("storage", "errorStorage"),
+                CoreError::Code(_) => ("invalid_code", "errorInvalidCode"),
+                CoreError::Random => ("internal", "errorOther"),
+            }
         };
+        let core_cause = err.cause();
+        let (cause, cause_detail) = if core_cause == Cause::Unknown {
+            (String::new(), None)
+        } else {
+            let cause_key = format!("cause{}", core_cause.as_str());
+            let detail = localizer.text(&cause_key);
+            (cause_key, Some(detail))
+        };
+        let raw_technical = match err {
+            CoreError::Code(CodeError::UnknownWord(word))
+                if word.chars().nth(MAX_ERROR_WORD_PREVIEW_CHARS).is_some() =>
+            {
+                let preview: String = word.chars().take(MAX_ERROR_WORD_PREVIEW_CHARS).collect();
+                format!("{preview:?}... is not a code word")
+            }
+            _ => err.to_string(),
+        };
+        let technical_english = totaldrop_l10n::reveal_controls(&raw_technical);
         Self {
+            kind: kind.to_owned(),
+            l10n_key: primary_key.to_owned(),
+            cause,
             summary: localizer.text(primary_key),
             cause_detail,
-            technical_english: err.to_string(),
+            technical_english,
+        }
+    }
+
+    /// Creates a localized `TextDamaged` error when a plain-text transfer fails
+    /// its integrity check or UTF-8 validation (`errorTextDamaged`).
+    #[must_use]
+    pub fn text_damaged(localizer: &WindowsLocalizer) -> Self {
+        Self {
+            kind: "text_damaged".to_owned(),
+            l10n_key: "errorTextDamaged".to_owned(),
+            cause: String::new(),
+            summary: localizer.text("errorTextDamaged"),
+            cause_detail: None,
+            technical_english: "the text failed its check".to_owned(),
+        }
+    }
+
+    /// Creates a localized `TextTooLong` error when outgoing text exceeds
+    /// [`totaldrop_core::MAX_TEXT`] (`1_048_576` UTF-8 bytes, `sendTextTooLong`).
+    #[must_use]
+    pub fn text_too_long(localizer: &WindowsLocalizer) -> Self {
+        let limit_str = localizer.format_bytes(totaldrop_core::MAX_TEXT);
+        let summary = localizer
+            .format_message(
+                "sendTextTooLong",
+                &[("size", totaldrop_l10n::Arg::Text(&limit_str))],
+            )
+            .unwrap_or_else(|| localizer.text("sendTextTooLong"));
+        Self {
+            kind: "text_too_long".to_owned(),
+            l10n_key: "sendTextTooLong".to_owned(),
+            cause: String::new(),
+            summary,
+            cause_detail: None,
+            technical_english: format!(
+                "the text is longer than {} bytes; send it as a file",
+                totaldrop_core::MAX_TEXT
+            ),
         }
     }
 }
@@ -398,5 +547,101 @@ pub async fn connect_windows_receive(
         biased;
         () = cancel.wait_cancelled() => Err(CoreError::Stopped),
         res = IncomingOffer::connect_with(&opts, &validated.display_english, cancel.as_core_stop()) => res,
+    }
+}
+
+/// Verifies that `dest` exists, is a directory (not a regular file), and is
+/// writable by delegating to [`totaldrop_core::check_destination`].
+///
+/// # Errors
+///
+/// Returns [`totaldrop_core::Error::Io`] if `dest` does not exist, is not a
+/// directory, or cannot be written to.
+pub fn check_windows_destination(dest: &Path) -> totaldrop_core::Result<PathBuf> {
+    totaldrop_core::check_destination(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn localized_transfer_error_sanitizes_untrusted_remote_reasons() {
+        let localizer = WindowsLocalizer::new(["en-US"], Some("en-US"));
+        let malicious = concat!(
+            "remote\u{202E}evil\u{2069}",
+            "\x1b[31m\u{009B}31m\u{0085}",
+            "\u{2028}\u{2029}\u{FDD0}\u{FFFF}\u{E0041}"
+        );
+
+        for err in [
+            CoreError::Rendezvous(malicious.to_owned()),
+            CoreError::Cancelled(malicious.to_owned()),
+        ] {
+            let localized = LocalizedTransferError::from_core_error(&err, &localizer, false);
+            assert!(
+                !localized
+                    .technical_english
+                    .chars()
+                    .any(totaldrop_l10n::is_hidden),
+                "leaked hidden char in technical_english: {:?}",
+                localized.technical_english
+            );
+            for expected_escape in [
+                "<U+202E>",
+                "<U+2069>",
+                "<U+001B>",
+                "<U+009B>",
+                "<U+0085>",
+                "<U+2028>",
+                "<U+2029>",
+                "<U+FDD0>",
+                "<U+FFFF>",
+                "<U+E0041>",
+            ] {
+                assert!(
+                    localized.technical_english.contains(expected_escape),
+                    "expected {expected_escape} in {:?}",
+                    localized.technical_english
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn localized_transfer_error_bounds_unknown_word_preview_at_64_scalars() {
+        let localizer = WindowsLocalizer::new(["en-US"], Some("en-US"));
+
+        let word64 = "a".repeat(MAX_ERROR_WORD_PREVIEW_CHARS);
+        let exact = LocalizedTransferError::from_core_error(
+            &CoreError::Code(CodeError::UnknownWord(word64.clone())),
+            &localizer,
+            false,
+        );
+        assert!(!exact.technical_english.contains("..."));
+        assert!(exact.technical_english.contains(&word64));
+
+        let word65 = "é".repeat(MAX_ERROR_WORD_PREVIEW_CHARS + 1);
+        let over = LocalizedTransferError::from_core_error(
+            &CoreError::Code(CodeError::UnknownWord(word65)),
+            &localizer,
+            false,
+        );
+        assert!(over.technical_english.contains("..."));
+        assert!(over.technical_english.len() < 256);
+
+        let huge = LocalizedTransferError::from_core_error(
+            &CoreError::Code(CodeError::UnknownWord("x".repeat(20_000))),
+            &localizer,
+            false,
+        );
+        assert!(huge.technical_english.contains("..."));
+        assert!(huge.technical_english.len() < 256);
+        assert!(
+            !huge
+                .technical_english
+                .chars()
+                .any(totaldrop_l10n::is_hidden)
+        );
     }
 }
