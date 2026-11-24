@@ -35,3 +35,10 @@ path = "ui-winui3-fluent2/Assets/**"
 precedence = "override"
 SPDX-FileCopyrightText = "2026 The TotalDrop Contributors"
 SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# Generated 35-language Microsoft Store listing metadata (`tools/generate-store-listings.py`).
+[[annotations]]
+path = "packaging/store-listings/**"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 The TotalDrop Contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"

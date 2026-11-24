@@ -1,0 +1,480 @@
+# SPDX-FileCopyrightText: 2026 The TotalDrop Contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Unified Windows 11 x64 + ARM64 Microsoft Store release workflow (ADR 0016, ADR 0020).
+# Builds isolated x64 (`windows-latest`) and ARM64 (`windows-11-arm`) MSIX slices +
+# deterministic `.appxsym` PDB archives, merges them into a single dual-architecture
+# `.msixbundle` wrapped inside a `.msixupload` submission archive (required from
+# Flight #1 to avoid Store standalone-.msix vs .msixbundle format lock-in), emits
+# `SHA256SUMS` + Sigstore OIDC build provenance attestation on `windows-v*` tags,
+# and uploads the verified artifact for manual Partner Center web upload.
+#
+# Why manual Partner Center web upload: Individual Microsoft Partner Center accounts
+# cannot associate a Microsoft Entra ID tenant or use the Microsoft Store Submission
+# API (`msstore` CLI). Maintainers download the attested CI artifact and upload
+# `TotalDrop-<version>.msixupload` through the Partner Center web portal.
+name: Windows Store Release (msixbundle / msixupload)
+
+on:
+  push:
+    tags:
+      - "windows-v*"
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: "Application SemVer label (e.g. 0.1.0-beta.1)"
+        required: false
+        type: string
+        default: "0.1.0-beta.1"
+      store_msix_version:
+        description: "4-part Store MSIX version (Major >= 1, Revision == 0, e.g. 1.0.1.0)"
+        required: true
+        type: string
+        default: "1.0.1.0"
+      identity_name:
+        description: "Partner Center Identity/@Name override (leave blank for dry-run test identity)"
+        required: false
+        type: string
+        default: ""
+      publisher:
+        description: "Partner Center Identity/@Publisher X.500 CN= override (leave blank for dry-run)"
+        required: false
+        type: string
+        default: ""
+      publisher_display_name:
+        description: "Partner Center Properties/PublisherDisplayName override"
+        required: false
+        type: string
+        default: ""
+      allow_test_identity:
+        description: "Allow temporary CN=TotalDrop identity for dry-run workflow_dispatch runs"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: "${{ !startsWith(github.ref, 'refs/tags/') }}"
+
+env:
+  CARGO_TERM_COLOR: always
+  SOURCE_DATE_EPOCH: "1760000000"
+
+jobs:
+  preflight:
+    name: Preflight & Release Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      app_version: ${{ steps.validate.outputs.app_version }}
+      store_msix_version: ${{ steps.validate.outputs.store_msix_version }}
+      identity_name: ${{ steps.validate.outputs.identity_name }}
+      publisher: ${{ steps.validate.outputs.publisher }}
+      publisher_display_name: ${{ steps.validate.outputs.publisher_display_name }}
+      allow_test_identity: ${{ steps.validate.outputs.allow_test_identity }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate release ref, Store version rules, and inputs
+        id: validate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          INPUT_APP_VERSION: ${{ inputs.app_version }}
+          INPUT_STORE_MSIX_VERSION: ${{ inputs.store_msix_version }}
+          INPUT_IDENTITY_NAME: ${{ inputs.identity_name }}
+          INPUT_PUBLISHER: ${{ inputs.publisher }}
+          INPUT_PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name }}
+          INPUT_ALLOW_TEST_IDENTITY: ${{ inputs.allow_test_identity }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            git merge-base --is-ancestor "$COMMIT_SHA" origin/main || {
+              echo "::error::Release tag $REF_NAME ($COMMIT_SHA) must be an ancestor of origin/main."
+              exit 1
+            }
+            tag_ver="${REF_NAME#windows-v}"
+            csproj_ver=$(python3 -c 'import xml.etree.ElementTree as ET; r=ET.parse("ui-winui3-fluent2/TotalDrop.WinUI.csproj").getroot(); e=r.find("./PropertyGroup/Version"); print(e.text.strip() if e is not None and e.text else "")')
+            if [ "$tag_ver" != "$csproj_ver" ]; then
+              echo "::error::Release tag version '$tag_ver' does not match TotalDrop.WinUI.csproj <Version> '$csproj_ver'."
+              exit 1
+            fi
+            python3 tools/check-versions.py --store --require-store-identity
+            store_msix_ver=$(python3 -c 'import xml.etree.ElementTree as ET; ns="{http://schemas.microsoft.com/appx/manifest/foundation/windows10}"; r=ET.parse("target-x86_64/Package.x64.appxmanifest").getroot(); print(r.find(f"{ns}Identity").attrib["Version"])')
+            {
+              echo "app_version=$tag_ver"
+              echo "store_msix_version=$store_msix_ver"
+              echo "identity_name="
+              echo "publisher="
+              echo "publisher_display_name="
+              echo "allow_test_identity=false"
+            } >>"$GITHUB_OUTPUT"
+          else
+            python3 tools/check-versions.py
+            python3 - <<'PY'
+          import importlib.util
+          import os
+          import re
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          raw_inputs = {
+              "app_version": os.environ.get("INPUT_APP_VERSION", ""),
+              "store_msix_version": os.environ.get("INPUT_STORE_MSIX_VERSION", ""),
+              "identity_name": os.environ.get("INPUT_IDENTITY_NAME", ""),
+              "publisher": os.environ.get("INPUT_PUBLISHER", ""),
+              "publisher_display_name": os.environ.get("INPUT_PUBLISHER_DISPLAY_NAME", ""),
+          }
+          for label, raw_val in raw_inputs.items():
+              for ch in raw_val:
+                  cp = ord(ch)
+                  if (
+                      cp < 0x20
+                      or cp == 0x7F
+                      or 0x80 <= cp <= 0x9F
+                      or 0x202A <= cp <= 0x202E
+                      or 0x2066 <= cp <= 0x2069
+                      or cp == 0x061C
+                  ):
+                      raise SystemExit(
+                          f"error: {label} contains forbidden control, line break, NUL, or Bidi override character U+{cp:04X}"
+                      )
+
+          spec = importlib.util.spec_from_file_location("check_versions", Path("tools/check-versions.py"))
+          if spec is None or spec.loader is None:
+              raise SystemExit("error: unable to load tools/check-versions.py")
+          cv = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(cv)
+
+          app_ver = raw_inputs["app_version"].strip()
+          msix_ver = raw_inputs["store_msix_version"]
+          ident_name = raw_inputs["identity_name"].strip()
+          publisher = cv.strip_unescaped_x500_whitespace(raw_inputs["publisher"])
+          pub_disp = raw_inputs["publisher_display_name"].strip()
+          allow_test = os.environ.get("INPUT_ALLOW_TEST_IDENTITY", "false").strip().lower() == "true"
+
+          ver_errors: list[str] = []
+          if not cv.validate_store_msix_version(msix_ver, "store_msix_version", ver_errors):
+              raise SystemExit(f"error: {ver_errors[0]}")
+          if not re.fullmatch(r"[0-9A-Za-z.+-]{1,64}", app_ver):
+              raise SystemExit(f"error: invalid app_version: {app_ver!r}")
+          if ident_name and not cv.IDENTITY_NAME_RE.fullmatch(ident_name):
+              raise SystemExit(f"error: invalid identity_name: {ident_name!r}")
+          if publisher:
+              pub_errors: list[str] = []
+              if not cv.validate_x500_publisher(publisher, "publisher", pub_errors):
+                  raise SystemExit(f"error: {pub_errors[0]}")
+          if pub_disp and len(pub_disp) > 256:
+              raise SystemExit("error: invalid publisher_display_name (exceeds 256 characters)")
+
+          # Resolve effective identity: fall back to committed manifests when inputs are blank.
+          appx_ns = "{http://schemas.microsoft.com/appx/manifest/foundation/windows10}"
+          x64_ident = ET.parse("target-x86_64/Package.x64.appxmanifest").getroot().find(f"{appx_ns}Identity")
+          arm64_ident = ET.parse("target-arm64/Package.arm64.appxmanifest").getroot().find(f"{appx_ns}Identity")
+          if x64_ident is None or arm64_ident is None:
+              raise SystemExit("error: committed Package.{x64,arm64}.appxmanifest missing <Identity>")
+          m_x64_name = x64_ident.attrib.get("Name", "")
+          m_arm64_name = arm64_ident.attrib.get("Name", "")
+          m_x64_pub = x64_ident.attrib.get("Publisher", "")
+          m_arm64_pub = arm64_ident.attrib.get("Publisher", "")
+          if m_x64_name != m_arm64_name or m_x64_pub != m_arm64_pub:
+              raise SystemExit(
+                  "error: committed Package.x64.appxmanifest and Package.arm64.appxmanifest Identity mismatch "
+                  f"(x64=({m_x64_name!r}, {m_x64_pub!r}) vs arm64=({m_arm64_name!r}, {m_arm64_pub!r}))"
+              )
+
+          effective_name = ident_name or m_x64_name
+          effective_pub = publisher or m_x64_pub
+          if not cv.IDENTITY_NAME_RE.fullmatch(effective_name):
+              raise SystemExit(f"error: effective identity_name is invalid: {effective_name!r}")
+          eff_pub_errors: list[str] = []
+          if not cv.validate_x500_publisher(effective_pub, "effective publisher", eff_pub_errors):
+              raise SystemExit(f"error: {eff_pub_errors[0]}")
+
+          if not allow_test and cv.is_placeholder_test_identity(effective_name, effective_pub):
+              raise SystemExit(
+                  f"error: non-test release refuses placeholder test identity "
+                  f"(Name={effective_name!r}, Publisher={effective_pub!r}); "
+                  "supply Partner Center identity_name/publisher or commit real identity to Package.{x64,arm64}.appxmanifest"
+              )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"app_version={app_ver}\n")
+              fh.write(f"store_msix_version={msix_ver}\n")
+              fh.write(f"identity_name={ident_name}\n")
+              fh.write(f"publisher={publisher}\n")
+              fh.write(f"publisher_display_name={pub_disp}\n")
+              fh.write(f"allow_test_identity={'true' if allow_test else 'false'}\n")
+          PY
+            python3 tools/check-versions.py --store-version "$INPUT_STORE_MSIX_VERSION"
+          fi
+      - name: Run static Store, l10n, subplatform & bundle verifier gates
+        shell: bash
+        run: |
+          python3 tools/check-resw-parity.py --check
+          python3 tools/verify-subplatforms.py
+          python3 tools/generate-store-listings.py --check
+          python3 tools/verify-msix-artifact.py --self-test-bundle
+
+  build-x64:
+    name: Build x64 Store Slice & Symbols
+    needs: preflight
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python 3.12 (x64)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-pc-windows-msvc
+      - name: Setup .NET 10 LTS SDK
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build Store-ready x64 MSIX & deterministic .appxsym PDB archive
+        shell: pwsh
+        env:
+          STORE_MSIX_VERSION: ${{ needs.preflight.outputs.store_msix_version }}
+          STORE_IDENTITY_NAME: ${{ needs.preflight.outputs.identity_name }}
+          STORE_PUBLISHER: ${{ needs.preflight.outputs.publisher }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ needs.preflight.outputs.publisher_display_name }}
+          ALLOW_TEST_IDENTITY: ${{ needs.preflight.outputs.allow_test_identity }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $buildArgs = @{
+            Version     = $env:STORE_MSIX_VERSION
+            OutputDir   = "dist\x64"
+            StoreMode   = $true
+            EmitSymbols = $true
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STORE_IDENTITY_NAME)) {
+            $buildArgs["StoreIdentityName"] = $env:STORE_IDENTITY_NAME
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STORE_PUBLISHER)) {
+            $buildArgs["StorePublisher"] = $env:STORE_PUBLISHER
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STORE_PUBLISHER_DISPLAY_NAME)) {
+            $buildArgs["StorePublisherDisplayName"] = $env:STORE_PUBLISHER_DISPLAY_NAME
+          }
+          if ($env:ALLOW_TEST_IDENTITY -eq "true") {
+            $buildArgs["AllowTestIdentity"] = $true
+          }
+          & .\target-x86_64\build-x64.ps1 @buildArgs
+      - name: Deep-verify x64 MSIX slice & SHA256SUMS
+        shell: bash
+        env:
+          STORE_MSIX_VERSION: ${{ needs.preflight.outputs.store_msix_version }}
+          ALLOW_TEST_IDENTITY: ${{ needs.preflight.outputs.allow_test_identity }}
+        run: |
+          set -euo pipefail
+          extra_args=()
+          if [ "$ALLOW_TEST_IDENTITY" = "true" ]; then
+            extra_args+=(--allow-test-identity)
+          fi
+          python tools/verify-msix-artifact.py \
+            --msix "dist/x64/TotalDrop_${STORE_MSIX_VERSION}_x64.msix" \
+            --arch x64 \
+            --expected-version "$STORE_MSIX_VERSION" \
+            --store-mode \
+            --require-live-smoke \
+            ${extra_args[@]+"${extra_args[@]}"} \
+            --pri-dump dist/work-x64/pri-work-x64/resources-x64.pri.xml
+          (cd dist/x64 && sha256sum -c SHA256SUMS)
+      - name: Upload x64 MSIX & symbols slice
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: totaldrop-windows-x64-slice
+          path: |
+            dist/x64/TotalDrop_*.msix
+            dist/x64/TotalDrop_*.appxsym
+            dist/x64/SHA256SUMS
+          retention-days: 7
+          if-no-files-found: error
+
+  build-arm64:
+    name: Build ARM64 Store Slice & Symbols
+    needs: preflight
+    runs-on: windows-11-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python 3.12 (arm64)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: arm64
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-pc-windows-msvc
+      - name: Setup .NET 10 LTS SDK
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build Store-ready ARM64 MSIX & deterministic .appxsym PDB archive
+        shell: pwsh
+        env:
+          STORE_MSIX_VERSION: ${{ needs.preflight.outputs.store_msix_version }}
+          STORE_IDENTITY_NAME: ${{ needs.preflight.outputs.identity_name }}
+          STORE_PUBLISHER: ${{ needs.preflight.outputs.publisher }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ needs.preflight.outputs.publisher_display_name }}
+          ALLOW_TEST_IDENTITY: ${{ needs.preflight.outputs.allow_test_identity }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $buildArgs = @{
+            Version     = $env:STORE_MSIX_VERSION
+            OutputDir   = "dist\arm64"
+            StoreMode   = $true
+            EmitSymbols = $true
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STORE_IDENTITY_NAME)) {
+            $buildArgs["StoreIdentityName"] = $env:STORE_IDENTITY_NAME
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STORE_PUBLISHER)) {
+            $buildArgs["StorePublisher"] = $env:STORE_PUBLISHER
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STORE_PUBLISHER_DISPLAY_NAME)) {
+            $buildArgs["StorePublisherDisplayName"] = $env:STORE_PUBLISHER_DISPLAY_NAME
+          }
+          if ($env:ALLOW_TEST_IDENTITY -eq "true") {
+            $buildArgs["AllowTestIdentity"] = $true
+          }
+          & .\target-arm64\build-arm64.ps1 @buildArgs
+      - name: Deep-verify ARM64 MSIX slice & SHA256SUMS
+        shell: bash
+        env:
+          STORE_MSIX_VERSION: ${{ needs.preflight.outputs.store_msix_version }}
+          ALLOW_TEST_IDENTITY: ${{ needs.preflight.outputs.allow_test_identity }}
+        run: |
+          set -euo pipefail
+          extra_args=()
+          if [ "$ALLOW_TEST_IDENTITY" = "true" ]; then
+            extra_args+=(--allow-test-identity)
+          fi
+          python tools/verify-msix-artifact.py \
+            --msix "dist/arm64/TotalDrop_${STORE_MSIX_VERSION}_arm64.msix" \
+            --arch arm64 \
+            --expected-version "$STORE_MSIX_VERSION" \
+            --store-mode \
+            --require-live-smoke \
+            ${extra_args[@]+"${extra_args[@]}"} \
+            --pri-dump dist/work-arm64/pri-work-arm64/resources-arm64.pri.xml
+          (cd dist/arm64 && sha256sum -c SHA256SUMS)
+      - name: Upload ARM64 MSIX & symbols slice
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: totaldrop-windows-arm64-slice
+          path: |
+            dist/arm64/TotalDrop_*.msix
+            dist/arm64/TotalDrop_*.appxsym
+            dist/arm64/SHA256SUMS
+          retention-days: 7
+          if-no-files-found: error
+
+  bundle-and-attest:
+    name: Assemble Unified .msixbundle / .msixupload & Attest
+    needs: [preflight, build-x64, build-arm64]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python 3.12 (x64)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - name: Download x64 Store slice
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: totaldrop-windows-x64-slice
+          path: slices/x64
+      - name: Download ARM64 Store slice
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: totaldrop-windows-arm64-slice
+          path: slices/arm64
+      - name: Verify downloaded slice SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd slices/x64 && sha256sum -c SHA256SUMS)
+          (cd slices/arm64 && sha256sum -c SHA256SUMS)
+      - name: Build & deep-verify unified .msixbundle and .msixupload
+        shell: pwsh
+        env:
+          STORE_MSIX_VERSION: ${{ needs.preflight.outputs.store_msix_version }}
+          ALLOW_TEST_IDENTITY: ${{ needs.preflight.outputs.allow_test_identity }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $ver = $env:STORE_MSIX_VERSION
+          $bundleArgs = @{
+            Version      = $ver
+            X64Msix      = "slices\x64\TotalDrop_${ver}_x64.msix"
+            Arm64Msix    = "slices\arm64\TotalDrop_${ver}_arm64.msix"
+            X64Symbols   = "slices\x64\TotalDrop_${ver}_x64.appxsym"
+            Arm64Symbols = "slices\arm64\TotalDrop_${ver}_arm64.appxsym"
+            OutputDir    = "dist\store"
+            StoreMode    = $true
+          }
+          if ($env:ALLOW_TEST_IDENTITY -eq "true") {
+            $bundleArgs["AllowTestIdentity"] = $true
+          }
+          & .\tools\build-msixbundle.ps1 @bundleArgs
+      - name: Verify final Store submission SHA256SUMS
+        shell: bash
+        run: (cd dist/store && sha256sum -c SHA256SUMS)
+      - name: Attest Sigstore OIDC build provenance on release tags
+        id: attest
+        if: startsWith(github.ref, 'refs/tags/windows-v')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "dist/store/*.msixbundle, dist/store/*.msixupload"
+      - name: Stage Sigstore attestation bundle alongside submission artifacts
+        if: startsWith(github.ref, 'refs/tags/windows-v')
+        shell: bash
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          STORE_MSIX_VERSION: ${{ needs.preflight.outputs.store_msix_version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BUNDLE_PATH" ] || [ ! -f "$BUNDLE_PATH" ]; then
+            echo "::error::Expected Sigstore attestation bundle missing at '$BUNDLE_PATH'."
+            exit 1
+          fi
+          cp "$BUNDLE_PATH" "dist/store/totaldrop-windows-${STORE_MSIX_VERSION}.sigstore.json"
+      - name: Upload Partner Center Store submission package (.msixbundle, .msixupload & SHA256SUMS)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: totaldrop-windows-store-submission
+          path: dist/store/
+          retention-days: 30
+          if-no-files-found: error

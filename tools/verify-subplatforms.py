@@ -68,8 +68,12 @@ def main() -> int:
         subprocess.run(["sh", build_rel, "--check-recipe"], cwd=REPO_ROOT, check=True, stdout=subprocess.DEVNULL)
         subprocess.run(["sh", verify_rel, "--check-recipe"], cwd=REPO_ROOT, check=True, stdout=subprocess.DEVNULL)
 
-        # End-to-end staged archive build + SHA256SUMS verification on portable tar.gz units
-        if fmt in ("tar-gz", "static-tar-gz", "wasm32-simd128", "wasm32-baseline") and shutil.which("tar") and shutil.which("sha256sum"):
+        # End-to-end staged archive build + SHA256SUMS verification on portable archive units
+        can_smoke = (
+            (fmt in ("tar-gz", "static-tar-gz", "wasm32-simd128", "wasm32-baseline") and shutil.which("tar") is not None)
+            or fmt in ("portable-zip", "winget")
+        )
+        if can_smoke and shutil.which("sha256sum"):
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
                 stage_in = tmp_path / "stage"

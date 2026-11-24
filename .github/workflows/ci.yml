@@ -4,8 +4,8 @@
 # Hardened continuous integration workflow for TotalDrop for Windows 11 (ADR 0016).
 # Enforces least-privilege permissions, 40-character SHA-pinned actions, digest-pinned
 # container images, native x64 + ARM64 matrix verification, MSVC release builds,
-# real x64 .NET 10 Native AOT WinUI 3 + MakePri + strict makeappx MSIX build & deep
-# verification, static asset/version/resw checks, cargo-deny, REUSE 3.3, and gitleaks.
+# real x64 + ARM64 .NET 10 Native AOT WinUI 3 + MakePri + strict makeappx MSIX
+# builds & deep verification, Store listing/bundle checks, cargo-deny, REUSE 3.3, and gitleaks.
 name: CI
 
 on:
@@ -96,10 +96,16 @@ jobs:
           (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends python3-pil)
       - name: Verify version alignment & canonical CLSID
         run: python3 tools/check-versions.py
+      - name: Verify Store MSIX version guard
+        run: python3 tools/check-versions.py --store-version 1.0.1.0
       - name: Verify 46 deterministic Kose MSIX assets & TotalDrop.ico
         run: python3 tools/render-windows-assets.py --check
       - name: Verify 35-locale .resw and AppxManifest parity
         run: python3 tools/check-resw-parity.py --check
+      - name: Verify 35-language Microsoft Store listings
+        run: python3 tools/generate-store-listings.py --check
+      - name: Self-test .msixbundle, .msixupload & Store-mode verifier
+        run: python3 tools/verify-msix-artifact.py --self-test-bundle
       - name: Verify 6 isolated sub-platform x CPU units
         run: python3 tools/verify-subplatforms.py
 
@@ -157,7 +163,9 @@ jobs:
           $ErrorActionPreference = "Stop"
           $scripts = @(
             'target-x86_64/build-x64.ps1',
-            'target-arm64/build-arm64.ps1'
+            'target-arm64/build-arm64.ps1',
+            'tools/build-msixbundle.ps1',
+            'tools/run-wack.ps1'
           )
           foreach ($script in $scripts) {
             $fullPath = (Resolve-Path -LiteralPath $script).Path
@@ -172,6 +180,91 @@ jobs:
             }
             Write-Host "PowerShell AST OK: $script ($($tokens.Count) tokens)"
           }
+      - name: Smoke-test WACK XML report parser (-CheckReportOnly)
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $tmpDir = Join-Path $env:RUNNER_TEMP "wack-smoke"
+          New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+          $posCases = @(
+            @{
+              Name = "synthetic-attr-pass"
+              Xml  = '<REPORT OVERALL_RESULT="PASS"><REQUIREMENTS><REQUIREMENT><TEST NAME="Supported APIs" RESULT="PASS" /></REQUIREMENT></REQUIREMENTS></REPORT>'
+            },
+            @{
+              Name = "real-appcert-child-result-pass"
+              Xml  = '<?xml version="1.0" encoding="utf-8"?><?xml-stylesheet type="text/xsl" href="C:\ProgramData\Windows App Certification Kit\results.xsl"?><REPORT OVERALL_RESULT="PASS" VERSION="10.0.26100.1"><REQUIREMENTS><REQUIREMENT NUMBER="10" TITLE="Deployment and launch tests"><TEST INDEX="47" NAME="App launch" EXECUTIONTIME="00h:00m:11s.42" OPTIONAL="FALSE"><RESULT><![CDATA[PASS]]></RESULT><MESSAGES /></TEST></REQUIREMENT></REQUIREMENTS></REPORT>'
+            }
+          )
+          foreach ($case in $posCases) {
+            $casePath = Join-Path $tmpDir "$($case.Name).xml"
+            Set-Content -LiteralPath $casePath -Encoding UTF8 -Value $case.Xml
+            pwsh -NoProfile -File .\tools\run-wack.ps1 -CheckReportOnly -ReportPath $casePath
+            if ($LASTEXITCODE -ne 0) {
+              throw "Expected tools/run-wack.ps1 -CheckReportOnly to PASS on positive case '$($case.Name)' (exit=$LASTEXITCODE)"
+            }
+          }
+          $negCases = @(
+            @{
+              Name      = "real-appcert-child-result-fail"
+              Xml       = '<?xml version="1.0" encoding="utf-8"?><?xml-stylesheet type="text/xsl" href="C:\ProgramData\Windows App Certification Kit\results.xsl"?><REPORT OVERALL_RESULT="PASS" VERSION="10.0.26100.1"><REQUIREMENTS><REQUIREMENT NUMBER="10" TITLE="Deployment and launch tests"><TEST INDEX="47" NAME="App launch" EXECUTIONTIME="00h:00m:11s.42" OPTIONAL="FALSE"><RESULT><![CDATA[FAIL]]></RESULT><MESSAGES /></TEST></REQUIREMENT></REQUIREMENTS></REPORT>'
+              ExpectAll = @("App launch", "FAIL")
+            },
+            @{
+              Name      = "lowercase-fail"
+              Xml       = '<REPORT OVERALL_RESULT="PASS"><REQUIREMENTS><REQUIREMENT><TEST NAME="Supported APIs" result="fail" /></REQUIREMENT></REQUIREMENTS></REPORT>'
+              ExpectAll = @("Supported APIs", "fail")
+            },
+            @{
+              Name      = "error-result"
+              Xml       = '<REPORT OVERALL_RESULT="PASS"><REQUIREMENTS><REQUIREMENT><TEST NAME="Crash Test" RESULT="ERROR" /></REQUIREMENT></REQUIREMENTS></REPORT>'
+              ExpectAll = @("Crash Test", "ERROR")
+            },
+            @{
+              Name      = "empty-report"
+              Xml       = '<REPORT OVERALL_RESULT="PASS"></REPORT>'
+              ExpectAll = @("zero <TEST>")
+            },
+            @{
+              Name      = "duplicate-test-result-attr"
+              Xml       = '<REPORT OVERALL_RESULT="PASS"><TEST NAME="Shadowed" RESULT="PASS" result="FAIL" /></REPORT>'
+              ExpectAll = @("Shadowed", "duplicate")
+            },
+            @{
+              Name      = "duplicate-overall-result-attr"
+              Xml       = '<REPORT OVERALL_RESULT="PASS" overall_result="FAIL"><TEST NAME="Supported APIs" RESULT="PASS" /></REPORT>'
+              ExpectAll = @("OVERALL_RESULT", "duplicate")
+            },
+            @{
+              Name      = "all-skipped-zero-pass"
+              Xml       = '<REPORT OVERALL_RESULT="PASS"><TEST NAME="Supported APIs" RESULT="SKIPPED" /></REPORT>'
+              ExpectAll = @("zero PASS")
+            }
+          )
+          foreach ($case in $negCases) {
+            $casePath = Join-Path $tmpDir "$($case.Name).xml"
+            Set-Content -LiteralPath $casePath -Encoding UTF8 -Value $case.Xml
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+              $failOut = (& pwsh -NoProfile -File .\tools\run-wack.ps1 -CheckReportOnly -ReportPath $casePath 2>&1 | Out-String)
+              $failCode = $LASTEXITCODE
+            }
+            finally {
+              $ErrorActionPreference = $prevEap
+            }
+            if ($failCode -eq 0) {
+              throw "Expected tools/run-wack.ps1 -CheckReportOnly to FAIL on negative case '$($case.Name)'"
+            }
+            foreach ($needle in $case.ExpectAll) {
+              if ($failOut -notmatch [regex]::Escape($needle)) {
+                throw "Expected '$needle' in WACK error output for '$($case.Name)', got: $failOut"
+              }
+            }
+          }
+          Write-Host "WACK -CheckReportOnly 2 positive & 7 negative smoke tests OK"
+          $global:LASTEXITCODE = 0
       - name: Validate XML well-formedness (.xaml, .appxmanifest, app.manifest, and 35-locale .resw)
         shell: pwsh
         run: |
@@ -188,12 +281,14 @@ jobs:
             $doc.Load($fullPath)
           }
           Write-Host "XML OK: $($xmlFiles.Count) files validated (including 35 WinUI 3 .resw locales)"
-      - name: Verify sub-platforms, versions & .resw parity on Windows
+      - name: Verify sub-platforms, versions, Store listings & bundle self-test on Windows
         shell: bash
         run: |
           python tools/verify-subplatforms.py
           python tools/check-versions.py
           python tools/check-resw-parity.py --check
+          python tools/generate-store-listings.py --check
+          python tools/verify-msix-artifact.py --self-test-bundle
 
   windows-x64-msix:
     name: Windows x64 Native AOT & MSIX
@@ -244,6 +339,7 @@ jobs:
           --arch x64
           --expected-version 0.1.1.0
           --expect-signed
+          --require-live-smoke
           --pri-dump dist/work-x64/pri-work-x64/resources-x64.pri.xml
       - name: Verify ephemeral Authenticode signature on test MSIX
         shell: pwsh
@@ -277,6 +373,92 @@ jobs:
           name: totaldrop-windows-x64-test-msix
           path: |
             dist/TotalDrop_0.1.1.0_x64.msix
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  windows-arm64-msix:
+    name: Windows ARM64 Native AOT & MSIX
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python 3.12 (arm64)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: arm64
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-pc-windows-msvc
+      - name: Setup .NET 10 LTS SDK
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "10.0.x"
+      - name: Confirm active .NET 10 LTS SDK
+        shell: pwsh
+        run: |
+          Push-Location ui-winui3-fluent2
+          try {
+            $ver = dotnet --version
+            Write-Host "Active dotnet SDK: $ver"
+            if ($ver -notlike "10.0.*") {
+              throw "Expected .NET 10.0.x LTS SDK, got '$ver'"
+            }
+          }
+          finally {
+            Pop-Location
+          }
+      - name: Build ARM64 FFI & Explorer COM cdylibs, Native AOT WinUI 3, resources.pri & self-signed test MSIX
+        shell: pwsh
+        run: pwsh -NoProfile -File .\target-arm64\build-arm64.ps1 -SelfSignEphemeral
+      - name: Verify subplatform MSIX OPC/ZIP & SHA256SUMS
+        shell: bash
+        run: sh subplatforms/msix/arm64/verify.sh dist
+      - name: Deep-verify ARM64 MSIX contents, PRI dump, PE32+ hardening, CRT isolation & live C ABI
+        shell: bash
+        run: >-
+          python tools/verify-msix-artifact.py
+          --msix dist/TotalDrop_0.1.1.0_arm64.msix
+          --arch arm64
+          --expected-version 0.1.1.0
+          --expect-signed
+          --require-live-smoke
+          --pri-dump dist/work-arm64/pri-work-arm64/resources-arm64.pri.xml
+      - name: Verify ephemeral Authenticode signature on test MSIX
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $msix = (Resolve-Path -LiteralPath "dist\TotalDrop_0.1.1.0_arm64.msix").Path
+          $sig = Get-AuthenticodeSignature -FilePath $msix
+          Write-Host "Authenticode Status: $($sig.Status)"
+          Write-Host "Authenticode StatusMessage: $($sig.StatusMessage)"
+          if ($null -eq $sig.SignerCertificate) {
+            throw "MSIX is not signed (SignerCertificate is null)."
+          }
+          Write-Host "Authenticode Subject: $($sig.SignerCertificate.Subject)"
+          Write-Host "Authenticode Algorithm: $($sig.SignerCertificate.SignatureAlgorithm.FriendlyName)"
+          if ($sig.SignerCertificate.Subject -ne "CN=TotalDrop") {
+            throw "Expected Subject 'CN=TotalDrop', got '$($sig.SignerCertificate.Subject)'."
+          }
+          if ($sig.SignerCertificate.SignatureAlgorithm.FriendlyName -notmatch "sha256") {
+            throw "Expected SHA-256 signature algorithm, got '$($sig.SignerCertificate.SignatureAlgorithm.FriendlyName)'."
+          }
+          if ($sig.Status -in @("NotSigned", "HashMismatch", "NotSupportedFileFormat")) {
+            throw "Invalid Authenticode signature status: $($sig.Status) ($($sig.StatusMessage))"
+          }
+          if ($sig.Status -ne "Valid" -and -not ($sig.Status -eq "UnknownError" -and $sig.StatusMessage -match "not trusted|root certificate|untrusted")) {
+            throw "Unexpected Authenticode signature status: $($sig.Status) ($($sig.StatusMessage))"
+          }
+      - name: Upload ARM64 test MSIX artifact & SHA256SUMS
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: totaldrop-windows-arm64-test-msix
+          path: |
+            dist/TotalDrop_0.1.1.0_arm64.msix
             dist/SHA256SUMS
           if-no-files-found: error
 
@@ -363,7 +545,7 @@ jobs:
   gate:
     name: CI
     if: always()
-    needs: [rust-bridge, static-checks, windows-msvc-targets, windows-x64-msix, deny, reuse, secrets]
+    needs: [rust-bridge, static-checks, windows-msvc-targets, windows-x64-msix, windows-arm64-msix, deny, reuse, secrets]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required checks passed
